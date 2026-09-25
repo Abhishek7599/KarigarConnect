@@ -9,7 +9,7 @@ import { useLanguage } from "../i18n/LanguageContext";
 import "./VoiceInput.css";
 
 const BACKEND_URL =
-  "http://localhost:5000";
+  import.meta.env.VITE_API_URL;
 
 const VOICE_LANGUAGES = [
   {

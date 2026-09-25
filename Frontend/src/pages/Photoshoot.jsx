@@ -9,7 +9,7 @@ import { useLanguage } from "../i18n/LanguageContext";
 import "./Photoshoot.css";
 
 const BACKEND_URL =
-  "http://localhost:5000";
+  import.meta.env.VITE_API_URL;
 
 const styles = [
   {

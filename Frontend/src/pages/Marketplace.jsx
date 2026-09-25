@@ -9,7 +9,7 @@ import { useLanguage } from "../i18n/LanguageContext";
 import "./Marketplace.css";
 
 const BACKEND_URL =
-  "http://localhost:5000";
+  import.meta.env.VITE_API_URL;
 
 const ARTISAN_ID =
   "6aa7d975f3c555e19062b4cd";

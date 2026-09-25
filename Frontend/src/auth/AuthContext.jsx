@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 const AuthContext = createContext(null);
-const API = "http://localhost:5000";
+const API = import.meta.env.VITE_API_URL;
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => JSON.parse(localStorage.getItem("karigar-user") || "null"));
   const [token, setToken] = useState(() => localStorage.getItem("karigar-token"));

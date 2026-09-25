@@ -3,7 +3,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useLanguage } from "../i18n/LanguageContext";
 import "./Profile.css";
 
-const API = "http://localhost:5000";
+const API = import.meta.env.VITE_API_URL;
 
 const PROFILE_TRANSLATIONS = {
   en: {
