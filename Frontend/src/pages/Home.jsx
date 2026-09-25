@@ -1409,7 +1409,7 @@ function Home({
 
         const response =
           await fetch(
-            `${BACKEND_URL}/api/products?artisan=${ARTISAN_ID}&lang=${currentLanguage}`
+            `${BACKEND_URL}/api/products?artisan=${ARTISAN_ID}&lang=${currentLanguage}`, { headers: { Authorization: `Bearer ${localStorage.getItem("karigar-token") || ""}` } }
           );
 
         if (!response.ok) {
@@ -1953,3 +1953,5 @@ function Home({
 }
 
 export default Home;
+
+
