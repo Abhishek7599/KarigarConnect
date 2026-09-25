@@ -1,0 +1,377 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap");
+
+:root {
+  font-family: "DM Sans", sans-serif;
+  color: #24352d;
+  background: #f8f7f2;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #f8f7f2;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app {
+  min-height: 100vh;
+  background:
+    radial-gradient(
+      circle at top right,
+      rgba(218, 232, 214, 0.55),
+      transparent 30%
+    ),
+    #f8f7f2;
+}
+.auth-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f0f6ed; }
+.auth-card { width: min(420px, 100%); display: grid; gap: 14px; padding: 32px; border-radius: 24px; background: #fff; box-shadow: 0 18px 55px rgba(49,91,67,.16); }
+.auth-card h1, .auth-card p { margin: 0; }.auth-card input { padding: 12px; border: 1px solid #dfe5dc; border-radius: 10px; }.auth-card button { padding: 12px; border: 0; border-radius: 10px; background: #315b43; color: #fff; font-weight: 700; }.auth-card .auth-switch { background: transparent; color: #315b43; }.auth-error { color: #b42318; }
+
+/* NOTE: .navbar / .brand / .profile-button / .install-button / .main-container
+   used to be redefined here with older, hardcoded-color values. Since this file
+   loads after App.css, those rules were silently winning the cascade and
+   overriding the real design system (and removing position: sticky from the
+   navbar). Removed — App.css is now the single source of truth for those. */
+
+.hero-section {
+  max-width: 720px;
+  margin-bottom: 42px;
+}
+
+.eyebrow,
+.step-label {
+  color: #789b72;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.8px;
+  margin: 0 0 13px;
+}
+
+.hero-section h1 {
+  margin: 0;
+  color: #263a2d;
+  font-family: "Playfair Display", serif;
+  font-size: clamp(36px, 5vw, 60px);
+  line-height: 1.08;
+  letter-spacing: -1.5px;
+}
+
+.hero-section h1 span {
+  color: #73966c;
+}
+
+.hero-description {
+  max-width: 570px;
+  margin: 22px 0 0;
+  color: #78867d;
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+}
+
+.upload-card,
+.settings-card,
+.results-section {
+  background: white;
+  border: 1px solid #e5e9e1;
+  border-radius: 24px;
+  padding: 28px;
+  box-shadow: 0 12px 40px rgba(55, 79, 59, 0.04);
+}
+
+.section-heading,
+.results-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+.section-heading h2,
+.results-heading h2 {
+  margin: 0;
+  font-size: 20px;
+  color: #2b4032;
+}
+
+.heading-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: #f0f6ed;
+  font-size: 18px;
+}
+
+.upload-area {
+  min-height: 320px;
+  border: 1.5px dashed #b9cbb3;
+  border-radius: 18px;
+  background: #fbfdf9;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 25px;
+  text-align: center;
+  cursor: pointer;
+  overflow: hidden;
+  transition: 0.2s ease;
+}
+
+.upload-area:hover {
+  border-color: #789b72;
+  background: #f7fbf4;
+}
+
+.upload-icon {
+  width: 62px;
+  height: 62px;
+  display: grid;
+  place-items: center;
+  border-radius: 20px;
+  background: #e8f1e4;
+  color: #638d5b;
+  font-size: 35px;
+  margin-bottom: 20px;
+}
+
+.upload-area h3 {
+  margin: 0;
+  color: #34483a;
+  font-size: 17px;
+}
+
+.upload-area p {
+  margin: 9px 0 20px;
+  color: #93a096;
+  font-size: 13px;
+}
+
+.upload-button {
+  border-radius: 10px;
+  padding: 11px 18px;
+  background: #315b43;
+  color: white;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.uploaded-image {
+  width: 100%;
+  height: 320px;
+  object-fit: contain;
+  border-radius: 12px;
+}
+
+.change-photo-button {
+  width: 100%;
+  margin-top: 14px;
+  padding: 11px;
+  border: 1px solid #e2e8df;
+  border-radius: 10px;
+  background: white;
+  color: #8b665c;
+}
+
+.style-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.style-option {
+  min-height: 120px;
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  border: 1px solid #e2e8df;
+  border-radius: 15px;
+  background: #fff;
+  color: #34483a;
+  text-align: left;
+  transition: 0.2s ease;
+}
+
+.style-option:hover {
+  border-color: #9bb793;
+}
+
+.style-option.active {
+  border: 2px solid #789b72;
+  background: #f3f8f0;
+}
+
+.style-option span {
+  font-size: 23px;
+}
+
+.style-option strong {
+  font-size: 14px;
+}
+
+.style-option small {
+  color: #94a096;
+  font-size: 11px;
+}
+
+.generate-button {
+  width: 100%;
+  margin-top: 25px;
+  border: none;
+  border-radius: 13px;
+  padding: 15px;
+  background: #315b43;
+  color: white;
+  font-size: 14px;
+  font-weight: 700;
+  transition: 0.2s ease;
+}
+
+.generate-button:hover {
+  background: #244a34;
+}
+
+.generate-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.privacy-note {
+  margin: 15px 0 0;
+  text-align: center;
+  color: #a0aaa1;
+  font-size: 11px;
+}
+
+.results-section {
+  margin-top: 22px;
+}
+
+.success-label {
+  color: #638d5b;
+  background: #edf6e9;
+  border-radius: 20px;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.image-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 15px;
+}
+
+.result-card {
+  overflow: hidden;
+  border: 1px solid #e6eae2;
+  border-radius: 15px;
+  background: #fbfcf9;
+}
+
+.result-card img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+}
+
+.result-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 13px;
+}
+
+.result-footer strong,
+.result-footer small {
+  display: block;
+}
+
+.result-footer strong {
+  color: #3c5142;
+  font-size: 12px;
+}
+
+.result-footer small {
+  color: #9ba69c;
+  font-size: 10px;
+  margin-top: 4px;
+}
+
+.result-footer button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #e0e8dc;
+  border-radius: 9px;
+  background: white;
+  color: #52744c;
+}
+
+@media (max-width: 800px) {
+  .navbar {
+    padding: 0 5%;
+  }
+
+  .main-container {
+    width: 90%;
+    padding: 45px 0;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .image-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .brand p {
+    display: none;
+  }
+
+  .profile-button {
+    padding: 9px 11px;
+    font-size: 12px;
+  }
+
+  .hero-section h1 {
+    font-size: 38px;
+  }
+
+  .upload-card,
+  .settings-card,
+  .results-section {
+    padding: 20px;
+    border-radius: 18px;
+  }
+
+  .style-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

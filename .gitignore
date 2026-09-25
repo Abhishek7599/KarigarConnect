@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+dist/
+build/
+uploads/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Large AI tools and test files
+backend/tools/
+backend/test-images/

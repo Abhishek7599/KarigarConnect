@@ -1,0 +1,12 @@
+{
+  "name": "KarigarConnect",
+  "short_name": "KarigarConnect",
+  "description": "A practical digital workspace for Indian artisans.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8f7f2",
+  "theme_color": "#315b43",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
