@@ -548,6 +548,54 @@ def upscale_with_realesrgan(
     input_path,
     output_path,
 ):
+    # Real-ESRGAN NCNN Vulkan is a Windows/GPU executable.
+    # Render runs Linux without a GPU, so use CPU-safe OpenCV there.
+    if sys.platform != "win32":
+        print(
+            "Render/Linux detected - using CPU-safe 4x OpenCV upscale..."
+        )
+
+        image = cv2.imread(
+            input_path,
+            cv2.IMREAD_COLOR,
+        )
+
+        if image is None:
+            raise Exception(
+                "Could not read image for CPU upscaling."
+            )
+
+        height, width = image.shape[:2]
+
+        upscaled = cv2.resize(
+            image,
+            (
+                width * 4,
+                height * 4,
+            ),
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+        success = cv2.imwrite(
+            output_path,
+            upscaled,
+            [
+                cv2.IMWRITE_PNG_COMPRESSION,
+                3,
+            ],
+        )
+
+        if not success:
+            raise Exception(
+                "Could not save CPU-upscaled image."
+            )
+
+        print(
+            f"CPU upscale complete: {width * 4} x {height * 4}"
+        )
+
+        return
+
     if not os.path.exists(
         REAL_ESRGAN_EXE
     ):
