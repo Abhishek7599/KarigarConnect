@@ -3,14 +3,14 @@
 # KARIGARCONNECT STUDIO PHOTO PROCESSOR
 # ============================================================
 #
-# Render/Linux:
-#   Uses OpenCV foreground extraction.
-#
 # Windows:
-#   Attempts rembg if available.
-#   Falls back to OpenCV if rembg is unavailable.
+#   Uses rembg when available.
 #
-# This version intentionally does NOT import rembg on Render.
+# Render/Linux:
+#   NEVER uses GrabCut.
+#   Uses a lightweight center/edge foreground mask.
+#
+# The goal is to keep Studio generation reliable on Render CPU.
 # ============================================================
 
 print("PYTHON PROCESS STARTED", flush=True)
@@ -18,129 +18,77 @@ print("PYTHON PROCESS STARTED", flush=True)
 import sys
 import os
 import traceback
-import tempfile
-import shutil
-import subprocess
-from pathlib import Path
 
 print("IMPORT: standard libraries OK", flush=True)
 
+# ------------------------------------------------------------
+# OpenCV
+# ------------------------------------------------------------
 
-# ============================================================
-# OPENCV
-# ============================================================
+print("IMPORT: cv2 starting...", flush=True)
 
 try:
-    print("IMPORT: cv2 starting...", flush=True)
-
     import cv2
-
     print("IMPORT: cv2 OK", flush=True)
-
 except Exception as e:
-    print(
-        f"IMPORT ERROR: cv2 -> {e}",
-        flush=True
-    )
+    print(f"IMPORT ERROR cv2: {e}", flush=True)
+    raise
 
-    traceback.print_exc()
+# ------------------------------------------------------------
+# NumPy
+# ------------------------------------------------------------
 
-    sys.exit(1)
-
-
-# ============================================================
-# NUMPY
-# ============================================================
+print("IMPORT: numpy starting...", flush=True)
 
 try:
-    print("IMPORT: numpy starting...", flush=True)
-
     import numpy as np
-
     print("IMPORT: numpy OK", flush=True)
-
 except Exception as e:
-    print(
-        f"IMPORT ERROR: numpy -> {e}",
-        flush=True
-    )
+    print(f"IMPORT ERROR numpy: {e}", flush=True)
+    raise
 
-    traceback.print_exc()
-
-    sys.exit(1)
-
-
-# ============================================================
+# ------------------------------------------------------------
 # PIL
-# ============================================================
+# ------------------------------------------------------------
+
+print("IMPORT: PIL starting...", flush=True)
 
 try:
-    print("IMPORT: PIL starting...", flush=True)
-
-    from PIL import (
-        Image,
-        ImageEnhance,
-        ImageFilter
-    )
-
+    from PIL import Image, ImageEnhance, ImageFilter
     print("IMPORT: PIL OK", flush=True)
-
 except Exception as e:
-    print(
-        f"IMPORT ERROR: PIL -> {e}",
-        flush=True
-    )
+    print(f"IMPORT ERROR PIL: {e}", flush=True)
+    raise
 
-    traceback.print_exc()
-
-    sys.exit(1)
-
-
-# ============================================================
-# REMBG
-# ============================================================
+# ------------------------------------------------------------
+# rembg
+# ------------------------------------------------------------
 #
 # IMPORTANT:
-# Do not import rembg on Render/Linux.
-#
-# rembg/onnxruntime can cause very slow or problematic startup
-# on lightweight Render web services.
-# ============================================================
+# Do NOT import rembg on Render.
+# Its model initialization can block startup.
+# ------------------------------------------------------------
 
 rembg_available = False
 rembg_remove = None
-rembg_new_session = None
-rembg_session = None
 
 if sys.platform == "win32":
-
     try:
-        print(
-            "Windows detected. Trying rembg...",
-            flush=True
-        )
+        print("Windows detected. Loading rembg...", flush=True)
 
-        from rembg import (
-            remove as rembg_remove,
-            new_session as rembg_new_session
-        )
+        from rembg import remove as rembg_remove
 
         rembg_available = True
 
-        print(
-            "rembg available on Windows",
-            flush=True
-        )
+        print("rembg available", flush=True)
 
     except Exception as e:
-
         print(
-            f"rembg unavailable. Using OpenCV fallback: {e}",
+            f"rembg unavailable on Windows: {e}",
             flush=True
         )
-
+        rembg_available = False
 else:
-
     print(
         "Linux/Render detected. Skipping rembg.",
         flush=True
@@ -148,178 +96,90 @@ else:
 
 
 # ============================================================
-# CONFIGURATION
-# ============================================================
-
-REMBG_MODEL = os.getenv(
-    "REMBG_MODEL",
-    "u2netp"
-)
-
-WINDOWS_UPSCALER = os.path.join(
-    os.path.dirname(
-        os.path.dirname(__file__)
-    ),
-    "tools",
-    "realesrgan",
-    "realesrgan-ncnn-vulkan.exe"
-)
-
-WINDOWS_UPSCALER_MODEL = os.getenv(
-    "REALESRGAN_MODEL",
-    "realesrgan-x4plus"
-)
-
-DEFAULT_RENDER_CANVAS = 768
-DEFAULT_WINDOWS_CANVAS = 1080
-
-try:
-
-    CANVAS_SIZE = int(
-        os.getenv(
-            "STUDIO_CANVAS_SIZE",
-            (
-                DEFAULT_RENDER_CANVAS
-                if sys.platform != "win32"
-                else DEFAULT_WINDOWS_CANVAS
-            )
-        )
-    )
-
-except Exception:
-
-    CANVAS_SIZE = DEFAULT_RENDER_CANVAS
-
-
-# ============================================================
 # LOGGING
 # ============================================================
 
 def log(message):
-    print(
-        message,
-        flush=True
-    )
+    print(message, flush=True)
 
 
 # ============================================================
-# REMBG SESSION
-# ============================================================
-
-def get_rembg_session():
-
-    global rembg_session
-
-    if not rembg_available:
-
-        return None
-
-    if rembg_session is None:
-
-        log(
-            f"Loading rembg model: {REMBG_MODEL}"
-        )
-
-        rembg_session = rembg_new_session(
-            REMBG_MODEL
-        )
-
-        log(
-            "rembg model loaded successfully"
-        )
-
-    return rembg_session
-
-
-# ============================================================
-# IMAGE LOAD
+# IMAGE LOADING
 # ============================================================
 
 def load_image(input_path):
+    log(f"Loading image: {input_path}")
+
+    image = Image.open(input_path)
+
+    image = image.convert("RGB")
 
     log(
-        f"Loading image: {input_path}"
+        f"Original image: {image.size}, "
+        f"mode={image.mode}"
     )
 
-    if not os.path.exists(
-        input_path
-    ):
-
-        raise FileNotFoundError(
-            f"Input image does not exist: {input_path}"
-        )
-
-    image = Image.open(
-        input_path
-    )
-
-    log(
-        f"Original image: {image.size}, mode={image.mode}"
-    )
-
-    return image.convert("RGBA")
+    return image
 
 
 # ============================================================
-# OPENCV FOREGROUND EXTRACTION
+# FAST RENDER FOREGROUND EXTRACTION
 # ============================================================
 #
-# Render-safe fallback.
+# NO GrabCut.
 #
-# This creates a foreground mask using:
-#   - border sampling
-#   - GrabCut
+# Strategy:
+#   1. Resize to a small working image.
+#   2. Estimate background from the border.
+#   3. Calculate color distance from that background.
+#   4. Keep pixels sufficiently different from the border.
+#   5. Clean mask using small morphology operations.
 #
-# It works best when the product is reasonably separated
-# from the background.
+# This is intentionally lightweight.
 # ============================================================
 
-def remove_background_opencv(image):
+def remove_background_fast(image):
 
-    log(
-        "Using OpenCV foreground extraction..."
-    )
+    log("Using FAST Render foreground extraction...")
 
     rgba = np.array(
-        image.convert("RGBA")
+        image.convert("RGBA"),
+        dtype=np.uint8
     )
 
     rgb = rgba[:, :, :3]
 
     height, width = rgb.shape[:2]
 
-    if width < 20 or height < 20:
-
-        log(
-            "Image too small for foreground extraction."
-        )
-
-        return image
+    log(
+        f"Foreground input size: "
+        f"{width}x{height}"
+    )
 
     # --------------------------------------------------------
-    # Resize working image if extremely large.
-    # This keeps Render memory usage reasonable.
+    # Work at small resolution.
     # --------------------------------------------------------
 
-    max_dimension = 1200
+    max_dimension = 600
 
     scale = min(
         1.0,
-        max_dimension / max(
-            width,
-            height
+        max_dimension / float(
+            max(width, height)
         )
     )
 
-    if scale < 1.0:
+    work_width = max(
+        32,
+        int(width * scale)
+    )
 
-        work_width = int(
-            width * scale
-        )
+    work_height = max(
+        32,
+        int(height * scale)
+    )
 
-        work_height = int(
-            height * scale
-        )
+    if scale != 1.0:
 
         work_rgb = cv2.resize(
             rgb,
@@ -334,159 +194,164 @@ def remove_background_opencv(image):
 
         work_rgb = rgb.copy()
 
-    work_height, work_width = work_rgb.shape[:2]
+    log(
+        f"Working resolution: "
+        f"{work_width}x{work_height}"
+    )
 
     # --------------------------------------------------------
-    # GrabCut mask
+    # Convert to LAB.
+    #
+    # LAB gives a better color-distance estimate than raw RGB.
     # --------------------------------------------------------
 
-    mask = np.zeros(
+    lab = cv2.cvtColor(
+        work_rgb,
+        cv2.COLOR_RGB2LAB
+    )
+
+    # --------------------------------------------------------
+    # Sample the image borders.
+    # --------------------------------------------------------
+
+    border = max(
+        3,
+        int(
+            min(work_width, work_height) * 0.04
+        )
+    )
+
+    top = lab[:border, :, :]
+    bottom = lab[-border:, :, :]
+    left = lab[:, :border, :]
+    right = lab[:, -border:, :]
+
+    border_pixels = np.concatenate(
+        [
+            top.reshape(-1, 3),
+            bottom.reshape(-1, 3),
+            left.reshape(-1, 3),
+            right.reshape(-1, 3)
+        ],
+        axis=0
+    )
+
+    background_color = np.median(
+        border_pixels,
+        axis=0
+    )
+
+    log(
+        "Estimated border background color."
+    )
+
+    # --------------------------------------------------------
+    # Color distance from estimated background.
+    # --------------------------------------------------------
+
+    diff = (
+        lab.astype(np.float32)
+        - background_color.astype(np.float32)
+    )
+
+    distance = np.sqrt(
+        np.sum(
+            diff * diff,
+            axis=2
+        )
+    )
+
+    # --------------------------------------------------------
+    # Dynamic threshold.
+    #
+    # The threshold is based on border variation so textured
+    # backgrounds don't immediately swallow the product.
+    # --------------------------------------------------------
+
+    border_distance = np.sqrt(
+        np.sum(
+            (
+                border_pixels.astype(np.float32)
+                - background_color.astype(np.float32)
+            )
+            ** 2,
+            axis=1
+        )
+    )
+
+    noise_level = float(
+        np.percentile(
+            border_distance,
+            90
+        )
+    )
+
+    threshold = max(
+        18.0,
+        min(
+            55.0,
+            noise_level * 2.2 + 12.0
+        )
+    )
+
+    log(
+        f"Foreground threshold: "
+        f"{threshold:.2f}"
+    )
+
+    foreground = (
+        distance > threshold
+    ).astype(np.uint8) * 255
+
+    # --------------------------------------------------------
+    # Strongly prefer the central region.
+    #
+    # This prevents random border texture from becoming
+    # foreground.
+    # --------------------------------------------------------
+
+    center_mask = np.zeros(
         (
             work_height,
             work_width
         ),
-        np.uint8
+        dtype=np.uint8
     )
 
-    # Start with probable background everywhere.
-    mask[:] = cv2.GC_PR_BGD
-
-    margin_x = max(
-        5,
-        int(work_width * 0.04)
-    )
-
-    margin_y = max(
-        5,
-        int(work_height * 0.04)
-    )
-
-    # Strong background around edges.
-    mask[
-        :margin_y,
-        :
-    ] = cv2.GC_BGD
-
-    mask[
-        -margin_y:,
-        :
-    ] = cv2.GC_BGD
-
-    mask[
-        :,
-        :margin_x
-    ] = cv2.GC_BGD
-
-    mask[
-        :,
-        -margin_x:
-    ] = cv2.GC_BGD
-
-    # Product is assumed to occupy the central region.
-    rect_x = int(
+    margin_x = int(
         work_width * 0.08
     )
 
-    rect_y = int(
-        work_height * 0.08
+    margin_y = int(
+        work_height * 0.05
     )
 
-    rect_w = int(
-        work_width * 0.84
+    cv2.rectangle(
+        center_mask,
+        (
+            margin_x,
+            margin_y
+        ),
+        (
+            work_width - margin_x - 1,
+            work_height - margin_y - 1
+        ),
+        255,
+        -1
     )
 
-    rect_h = int(
-        work_height * 0.84
+    foreground = cv2.bitwise_and(
+        foreground,
+        center_mask
     )
-
-    bgd_model = np.zeros(
-        (1, 65),
-        np.float64
-    )
-
-    fgd_model = np.zeros(
-        (1, 65),
-        np.float64
-    )
-
-    try:
-
-        cv2.grabCut(
-            work_rgb,
-            mask,
-            (
-                rect_x,
-                rect_y,
-                rect_w,
-                rect_h
-            ),
-            bgd_model,
-            fgd_model,
-            4,
-            cv2.GC_INIT_WITH_RECT
-        )
-
-        foreground_mask = np.where(
-            (
-                (mask == cv2.GC_FGD)
-                |
-                (mask == cv2.GC_PR_FGD)
-            ),
-            255,
-            0
-        ).astype(
-            np.uint8
-        )
-
-    except Exception as e:
-
-        log(
-            f"GrabCut failed: {e}"
-        )
-
-        # Conservative fallback:
-        # keep central region.
-        foreground_mask = np.zeros(
-            (
-                work_height,
-                work_width
-            ),
-            dtype=np.uint8
-        )
-
-        cv2.ellipse(
-            foreground_mask,
-            (
-                work_width // 2,
-                work_height // 2
-            ),
-            (
-                int(work_width * 0.38),
-                int(work_height * 0.42)
-            ),
-            0,
-            0,
-            360,
-            255,
-            -1
-        )
 
     # --------------------------------------------------------
-    # Clean mask
+    # Morphological cleanup.
+    #
+    # Small kernels only.
     # --------------------------------------------------------
 
-    kernel_size = max(
-        3,
-        int(
-            min(
-                work_width,
-                work_height
-            ) * 0.008
-        )
-    )
-
-    if kernel_size % 2 == 0:
-        kernel_size += 1
+    kernel_size = 3
 
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
@@ -496,30 +361,83 @@ def remove_background_opencv(image):
         )
     )
 
-    foreground_mask = cv2.morphologyEx(
-        foreground_mask,
+    foreground = cv2.morphologyEx(
+        foreground,
         cv2.MORPH_OPEN,
-        kernel
+        kernel,
+        iterations=1
     )
 
-    foreground_mask = cv2.morphologyEx(
-        foreground_mask,
+    foreground = cv2.morphologyEx(
+        foreground,
         cv2.MORPH_CLOSE,
-        kernel
+        kernel,
+        iterations=2
     )
 
-    foreground_mask = cv2.GaussianBlur(
-        foreground_mask,
+    # --------------------------------------------------------
+    # Keep the largest connected component.
+    # --------------------------------------------------------
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        foreground,
+        connectivity=8
+    )
+
+    if num_labels > 1:
+
+        component_areas = stats[
+            1:,
+            cv2.CC_STAT_AREA
+        ]
+
+        largest_index = (
+            1
+            + int(
+                np.argmax(
+                    component_areas
+                )
+            )
+        )
+
+        largest_area = int(
+            stats[
+                largest_index,
+                cv2.CC_STAT_AREA
+            ]
+        )
+
+        image_area = (
+            work_width * work_height
+        )
+
+        # Only use the component if it isn't absurdly small.
+        if largest_area > image_area * 0.01:
+
+            foreground = np.where(
+                labels == largest_index,
+                255,
+                0
+            ).astype(
+                np.uint8
+            )
+
+    # --------------------------------------------------------
+    # Soft edge.
+    # --------------------------------------------------------
+
+    foreground = cv2.GaussianBlur(
+        foreground,
         (0, 0),
-        1.2
+        1.0
     )
 
     # --------------------------------------------------------
-    # Restore original resolution.
+    # Restore original size.
     # --------------------------------------------------------
 
-    foreground_mask = cv2.resize(
-        foreground_mask,
+    foreground = cv2.resize(
+        foreground,
         (
             width,
             height
@@ -529,7 +447,7 @@ def remove_background_opencv(image):
 
     result = rgba.copy()
 
-    result[:, :, 3] = foreground_mask
+    result[:, :, 3] = foreground
 
     output = Image.fromarray(
         result,
@@ -537,7 +455,7 @@ def remove_background_opencv(image):
     )
 
     log(
-        "OpenCV foreground extraction complete"
+        "FAST Render foreground extraction complete"
     )
 
     return output
@@ -550,12 +468,13 @@ def remove_background_opencv(image):
 def remove_background(image):
 
     # --------------------------------------------------------
-    # Windows + rembg
+    # Windows
     # --------------------------------------------------------
 
     if (
         sys.platform == "win32"
         and rembg_available
+        and rembg_remove is not None
     ):
 
         try:
@@ -564,16 +483,21 @@ def remove_background(image):
                 "Removing background with rembg..."
             )
 
-            session = get_rembg_session()
-
-            result = rembg_remove(
-                image,
-                session=session
+            output = rembg_remove(
+                image
             )
 
-            if result.mode != "RGBA":
-
-                result = result.convert(
+            if isinstance(
+                output,
+                Image.Image
+            ):
+                result = output.convert(
+                    "RGBA"
+                )
+            else:
+                result = Image.open(
+                    output
+                ).convert(
                     "RGBA"
                 )
 
@@ -590,14 +514,14 @@ def remove_background(image):
             )
 
             log(
-                "Falling back to OpenCV..."
+                "Falling back to fast OpenCV extraction..."
             )
 
     # --------------------------------------------------------
     # Render/Linux
     # --------------------------------------------------------
 
-    return remove_background_opencv(
+    return remove_background_fast(
         image
     )
 
@@ -608,39 +532,33 @@ def remove_background(image):
 
 def smart_crop(image):
 
-    log(
-        "Creating smart crop..."
-    )
+    log("Creating smart crop...")
 
-    alpha = image.getchannel(
-        "A"
-    )
+    rgba = image.convert("RGBA")
+
+    alpha = rgba.getchannel("A")
 
     bbox = alpha.getbbox()
 
-    if not bbox:
+    if bbox is None:
 
         log(
-            "No alpha bounding box found. Using full image."
+            "No foreground detected. "
+            "Keeping original image."
         )
 
-        return image
+        return rgba
 
     left, top, right, bottom = bbox
 
-    width = right - left
-    height = bottom - top
-
-    if width <= 0 or height <= 0:
-
-        return image
+    width, height = rgba.size
 
     padding_x = int(
-        width * 0.15
+        width * 0.08
     )
 
     padding_y = int(
-        height * 0.15
+        height * 0.08
     )
 
     left = max(
@@ -654,16 +572,16 @@ def smart_crop(image):
     )
 
     right = min(
-        image.width,
+        width,
         right + padding_x
     )
 
     bottom = min(
-        image.height,
+        height,
         bottom + padding_y
     )
 
-    cropped = image.crop(
+    cropped = rgba.crop(
         (
             left,
             top,
@@ -673,7 +591,8 @@ def smart_crop(image):
     )
 
     log(
-        f"Smart crop: {cropped.size}"
+        f"Smart crop: "
+        f"{cropped.size}"
     )
 
     return cropped
@@ -683,30 +602,23 @@ def smart_crop(image):
 # RESIZE PRODUCT
 # ============================================================
 
-def resize_product(
-    image,
-    canvas_size
-):
+def resize_product(image, max_product_size):
 
     log(
-        f"Resizing product for {canvas_size}x{canvas_size} canvas..."
+        f"Resizing product to fit "
+        f"{max_product_size}px..."
     )
 
-    max_product_size = int(
-        canvas_size * 0.72
+    image = image.convert(
+        "RGBA"
     )
 
     width, height = image.size
 
-    if width <= 0 or height <= 0:
-
-        raise ValueError(
-            "Invalid product image dimensions."
-        )
-
     scale = min(
         max_product_size / width,
-        max_product_size / height
+        max_product_size / height,
+        1.0
     )
 
     new_width = max(
@@ -728,209 +640,195 @@ def resize_product(
     )
 
     log(
-        f"Product resized: {resized.size}"
+        f"Product size: "
+        f"{resized.size}"
     )
 
     return resized
 
 
 # ============================================================
-# LIGHTING
+# CREATE STUDIO BACKGROUND
 # ============================================================
 
-def apply_lighting(image):
+def create_studio_background(
+    width,
+    height
+):
 
     log(
-        "Applying product lighting..."
+        "Creating studio background..."
     )
 
-    rgb = image.convert(
+    background = np.zeros(
+        (
+            height,
+            width,
+            3
+        ),
+        dtype=np.uint8
+    )
+
+    # Neutral warm-gray studio background.
+    top_value = 242
+    bottom_value = 222
+
+    for y in range(height):
+
+        ratio = (
+            y / max(
+                1,
+                height - 1
+            )
+        )
+
+        value = int(
+            top_value
+            * (1.0 - ratio)
+            + bottom_value
+            * ratio
+        )
+
+        background[y, :, :] = (
+            value,
+            value,
+            value
+        )
+
+    return Image.fromarray(
+        background,
         "RGB"
-    )
-
-    brightness = ImageEnhance.Brightness(
-        rgb
-    )
-
-    rgb = brightness.enhance(
-        1.05
-    )
-
-    contrast = ImageEnhance.Contrast(
-        rgb
-    )
-
-    rgb = contrast.enhance(
-        1.04
-    )
-
-    return rgb.convert(
+    ).convert(
         "RGBA"
     )
 
 
 # ============================================================
-# STUDIO BACKGROUND
+# STUDIO SHADOW
 # ============================================================
 
-def create_studio_background(
-    size
+def create_shadow(
+    width,
+    height
 ):
 
-    log(
-        f"Creating studio background: {size}x{size}"
+    shadow = np.zeros(
+        (
+            height,
+            width
+        ),
+        dtype=np.uint8
     )
 
-    background = np.zeros(
+    center_x = width // 2
+
+    center_y = int(
+        height * 0.78
+    )
+
+    ellipse_width = int(
+        width * 0.34
+    )
+
+    ellipse_height = int(
+        height * 0.045
+    )
+
+    cv2.ellipse(
+        shadow,
         (
-            size,
-            size,
+            center_x,
+            center_y
+        ),
+        (
+            ellipse_width,
+            ellipse_height
+        ),
+        0,
+        0,
+        360,
+        120,
+        -1
+    )
+
+    shadow = cv2.GaussianBlur(
+        shadow,
+        (0, 0),
+        max(
+            3,
+            int(width * 0.025)
+        )
+    )
+
+    shadow_rgba = np.zeros(
+        (
+            height,
+            width,
             4
         ),
         dtype=np.uint8
     )
 
-    top_color = np.array(
-        [
-            248,
-            245,
-            238,
-            255
-        ],
-        dtype=np.float32
-    )
-
-    bottom_color = np.array(
-        [
-            225,
-            220,
-            210,
-            255
-        ],
-        dtype=np.float32
-    )
-
-    for y in range(size):
-
-        ratio = y / max(
-            1,
-            size - 1
-        )
-
-        color = (
-            top_color * (1 - ratio)
-            +
-            bottom_color * ratio
-        ).astype(
-            np.uint8
-        )
-
-        background[y, :, :] = color
+    shadow_rgba[:, :, 0:3] = 0
+    shadow_rgba[:, :, 3] = shadow
 
     return Image.fromarray(
-        background,
+        shadow_rgba,
         "RGBA"
     )
 
 
 # ============================================================
-# SHADOW
-# ============================================================
-
-def create_shadow(
-    product,
-    canvas_size
-):
-
-    log(
-        "Creating product shadow..."
-    )
-
-    alpha = product.getchannel(
-        "A"
-    )
-
-    shadow_alpha = alpha.filter(
-        ImageFilter.GaussianBlur(
-            radius=max(
-                4,
-                int(
-                    canvas_size * 0.012
-                )
-            )
-        )
-    )
-
-    shadow = Image.new(
-        "RGBA",
-        product.size,
-        (
-            0,
-            0,
-            0,
-            0
-        )
-    )
-
-    shadow.putalpha(
-        shadow_alpha.point(
-            lambda p: int(
-                p * 0.22
-            )
-        )
-    )
-
-    return shadow
-
-
-# ============================================================
-# COMPOSITE
+# COMPOSITE PRODUCT
 # ============================================================
 
 def composite_product(
-    background,
     product,
     canvas_size
 ):
 
-    log(
-        "Compositing product..."
+    canvas_width, canvas_height = (
+        canvas_size,
+        canvas_size
     )
 
-    x = (
-        canvas_size
-        - product.width
-    ) // 2
-
-    y = (
-        canvas_size
-        - product.height
-    ) // 2
-
-    y += int(
-        canvas_size * 0.035
+    background = create_studio_background(
+        canvas_width,
+        canvas_height
     )
+
+    # --------------------------------------------------------
+    # Shadow
+    # --------------------------------------------------------
 
     shadow = create_shadow(
-        product,
-        canvas_size
-    )
-
-    shadow_x = x
-
-    shadow_y = min(
-        canvas_size - shadow.height,
-        y + int(
-            canvas_size * 0.025
-        )
+        canvas_width,
+        canvas_height
     )
 
     background.alpha_composite(
-        shadow,
-        (
-            shadow_x,
-            shadow_y
-        )
+        shadow
+    )
+
+    # --------------------------------------------------------
+    # Product
+    # --------------------------------------------------------
+
+    product_width, product_height = (
+        product.size
+    )
+
+    x = (
+        canvas_width
+        - product_width
+    ) // 2
+
+    # Slightly below center.
+    y = (
+        canvas_height
+        - product_height
+    ) // 2 + int(
+        canvas_height * 0.035
     )
 
     background.alpha_composite(
@@ -945,101 +843,95 @@ def composite_product(
 
 
 # ============================================================
-# OPENCV ENHANCEMENT
+# LIGHTING / IMAGE ENHANCEMENT
 # ============================================================
 
-def enhance_image(
-    image
-):
+def enhance_product(image):
 
     log(
-        "Applying OpenCV enhancement..."
+        "Applying studio lighting..."
+    )
+
+    rgba = image.convert(
+        "RGBA"
+    )
+
+    rgb = rgba.convert(
+        "RGB"
+    )
+
+    # Slight contrast enhancement.
+    rgb = ImageEnhance.Contrast(
+        rgb
+    ).enhance(
+        1.06
+    )
+
+    # Slight brightness enhancement.
+    rgb = ImageEnhance.Brightness(
+        rgb
+    ).enhance(
+        1.025
+    )
+
+    # Very mild color enhancement.
+    rgb = ImageEnhance.Color(
+        rgb
+    ).enhance(
+        1.04
+    )
+
+    return rgb.convert(
+        "RGBA"
+    )
+
+
+# ============================================================
+# FINAL SHARPENING
+# ============================================================
+
+def final_enhancement(image):
+
+    log(
+        "Final image enhancement..."
     )
 
     rgb = image.convert(
         "RGB"
     )
 
-    array = np.array(
-        rgb
-    )
-
-    blurred = cv2.GaussianBlur(
-        array,
-        (0, 0),
-        1.0
-    )
-
-    sharpened = cv2.addWeighted(
-        array,
-        1.12,
-        blurred,
-        -0.12,
-        0
-    )
-
-    lab = cv2.cvtColor(
-        sharpened,
-        cv2.COLOR_RGB2LAB
-    )
-
-    l_channel, a_channel, b_channel = cv2.split(
-        lab
-    )
-
-    clahe = cv2.createCLAHE(
-        clipLimit=1.5,
-        tileGridSize=(
-            8,
-            8
+    # Mild unsharp mask.
+    rgb = rgb.filter(
+        ImageFilter.UnsharpMask(
+            radius=1.2,
+            percent=70,
+            threshold=3
         )
     )
 
-    l_channel = clahe.apply(
-        l_channel
-    )
-
-    enhanced_lab = cv2.merge(
-        [
-            l_channel,
-            a_channel,
-            b_channel
-        ]
-    )
-
-    enhanced = cv2.cvtColor(
-        enhanced_lab,
-        cv2.COLOR_LAB2RGB
-    )
-
-    return Image.fromarray(
-        enhanced
-    )
+    return rgb
 
 
 # ============================================================
-# CPU UPSCALE
+# UPSCALE
 # ============================================================
 
-def upscale_cpu(
+def upscale_image(
     image,
     target_size
 ):
 
     log(
-        f"Render/Linux CPU upscale to {target_size}x{target_size}..."
+        f"Upscaling final image to "
+        f"{target_size}x{target_size}..."
     )
 
-    image = image.convert(
-        "RGB"
-    )
-
-    array = np.array(
-        image
+    rgb = np.array(
+        image.convert("RGB")
     )
 
     upscaled = cv2.resize(
-        array,
+        rgb,
         (
             target_size,
             target_size
@@ -1048,232 +940,24 @@ def upscale_cpu(
     )
 
     return Image.fromarray(
-        upscaled
-    )
-
-
-# ============================================================
-# WINDOWS REAL-ESRGAN
-# ============================================================
-
-def upscale_windows(
-    image
-):
-
-    log(
-        "Attempting Windows Real-ESRGAN upscale..."
-    )
-
-    if not os.path.exists(
-        WINDOWS_UPSCALER
-    ):
-
-        log(
-            "Real-ESRGAN executable not found."
-        )
-
-        return None
-
-    temp_dir = tempfile.mkdtemp(
-        prefix="karigar_studio_"
-    )
-
-    try:
-
-        input_file = os.path.join(
-            temp_dir,
-            "input.png"
-        )
-
-        output_dir = os.path.join(
-            temp_dir,
-            "output"
-        )
-
-        os.makedirs(
-            output_dir,
-            exist_ok=True
-        )
-
-        image.convert(
-            "RGB"
-        ).save(
-            input_file,
-            "PNG"
-        )
-
-        command = [
-            WINDOWS_UPSCALER,
-            "-i",
-            input_file,
-            "-o",
-            output_dir,
-            "-n",
-            WINDOWS_UPSCALER_MODEL,
-            "-s",
-            "4"
-        ]
-
-        log(
-            "Running Real-ESRGAN..."
-        )
-
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-
-        if result.stdout:
-
-            log(
-                result.stdout.strip()
-            )
-
-        if result.stderr:
-
-            log(
-                result.stderr.strip()
-            )
-
-        if result.returncode != 0:
-
-            log(
-                f"Real-ESRGAN failed with code {result.returncode}"
-            )
-
-            return None
-
-        generated_files = list(
-            Path(output_dir).glob("*")
-        )
-
-        if not generated_files:
-
-            log(
-                "Real-ESRGAN produced no output."
-            )
-
-            return None
-
-        generated = generated_files[0]
-
-        result_image = Image.open(
-            generated
-        ).convert(
-            "RGB"
-        )
-
-        log(
-            f"Real-ESRGAN output: {result_image.size}"
-        )
-
-        return result_image
-
-    except subprocess.TimeoutExpired:
-
-        log(
-            "Real-ESRGAN timed out."
-        )
-
-        return None
-
-    except Exception as e:
-
-        log(
-            f"Real-ESRGAN error: {e}"
-        )
-
-        traceback.print_exc()
-
-        return None
-
-    finally:
-
-        shutil.rmtree(
-            temp_dir,
-            ignore_errors=True
-        )
-
-
-# ============================================================
-# SAVE
-# ============================================================
-
-def save_final(
-    image,
-    output_path
-):
-
-    log(
-        f"Saving final image: {output_path}"
-    )
-
-    output_parent = os.path.dirname(
-        output_path
-    )
-
-    if output_parent:
-
-        os.makedirs(
-            output_parent,
-            exist_ok=True
-        )
-
-    image = image.convert(
+        upscaled,
         "RGB"
     )
 
-    image.save(
-        output_path,
-        "JPEG",
-        quality=95,
-        optimize=True
-    )
-
-    if not os.path.exists(
-        output_path
-    ):
-
-        raise RuntimeError(
-            "Output image was not created."
-        )
-
-    size = os.path.getsize(
-        output_path
-    )
-
-    if size <= 0:
-
-        raise RuntimeError(
-            "Output image is empty."
-        )
-
-    log(
-        f"Final output saved: {size} bytes"
-    )
-
 
 # ============================================================
-# STUDIO PIPELINE
+# MAIN STUDIO PROCESS
 # ============================================================
 
-def create_studio_photo(
+def process_studio(
     input_path,
     output_path
 ):
 
     log("")
-    log(
-        "========================================"
-    )
-    log(
-        "KARIGARCONNECT STUDIO PROCESSOR"
-    )
-    log(
-        "========================================"
-    )
+    log("========================================")
+    log("KARIGARCONNECT STUDIO PROCESSOR")
+    log("========================================")
 
     log(
         f"Input: {input_path}"
@@ -1287,12 +971,39 @@ def create_studio_photo(
         f"Platform: {sys.platform}"
     )
 
+    # --------------------------------------------------------
+    # Canvas
+    # --------------------------------------------------------
+    #
+    # Render uses 768 by default.
+    # You can change with:
+    #
+    # STUDIO_CANVAS_SIZE=1024
+    #
+    # --------------------------------------------------------
+
+    canvas_size = int(
+        os.getenv(
+            "STUDIO_CANVAS_SIZE",
+            "768"
+        )
+    )
+
+    canvas_size = max(
+        256,
+        min(
+            canvas_size,
+            2048
+        )
+    )
+
     log(
-        f"Canvas size: {CANVAS_SIZE}x{CANVAS_SIZE}"
+        f"Canvas size: "
+        f"{canvas_size}x{canvas_size}"
     )
 
     # --------------------------------------------------------
-    # 1/7
+    # 1/7 Load
     # --------------------------------------------------------
 
     log(
@@ -1304,7 +1015,7 @@ def create_studio_photo(
     )
 
     # --------------------------------------------------------
-    # 2/7
+    # 2/7 Background
     # --------------------------------------------------------
 
     log(
@@ -1316,7 +1027,7 @@ def create_studio_photo(
     )
 
     # --------------------------------------------------------
-    # 3/7
+    # 3/7 Crop
     # --------------------------------------------------------
 
     log(
@@ -1328,102 +1039,120 @@ def create_studio_photo(
     )
 
     # --------------------------------------------------------
-    # 4/7
+    # 4/7 Resize
     # --------------------------------------------------------
 
     log(
-        "4/7 Preparing product..."
+        "4/7 Resizing product..."
+    )
+
+    product_limit = int(
+        canvas_size * 0.78
     )
 
     product = resize_product(
         product,
-        CANVAS_SIZE
+        product_limit
     )
 
-    product = apply_lighting(
+    # --------------------------------------------------------
+    # 5/7 Lighting
+    # --------------------------------------------------------
+
+    log(
+        "5/7 Applying lighting..."
+    )
+
+    product = enhance_product(
         product
     )
 
     # --------------------------------------------------------
-    # 5/7
+    # 6/7 Studio composition
     # --------------------------------------------------------
 
     log(
-        "5/7 Creating studio scene..."
+        "6/7 Creating studio composition..."
     )
 
-    background = create_studio_background(
-        CANVAS_SIZE
-    )
-
-    composed = composite_product(
-        background,
+    result = composite_product(
         product,
-        CANVAS_SIZE
+        canvas_size
     )
 
     # --------------------------------------------------------
-    # 6/7
-    # --------------------------------------------------------
-
-    log(
-        "6/7 Enhancing final image..."
-    )
-
-    enhanced = enhance_image(
-        composed
-    )
-
-    # --------------------------------------------------------
-    # 7/7
+    # 7/7 Finalize
     # --------------------------------------------------------
 
     log(
-        "7/7 Upscaling and saving..."
+        "7/7 Finalizing output..."
     )
 
-    final_image = None
+    result = final_enhancement(
+        result
+    )
 
-    if sys.platform == "win32":
+    # --------------------------------------------------------
+    # Ensure output directory exists.
+    # --------------------------------------------------------
 
-        final_image = upscale_windows(
-            enhanced
-        )
-
-    if final_image is None:
-
-        final_image = upscale_cpu(
-            enhanced,
-            CANVAS_SIZE
-        )
-
-    save_final(
-        final_image,
+    output_dir = os.path.dirname(
         output_path
     )
 
+    if output_dir:
+        os.makedirs(
+            output_dir,
+            exist_ok=True
+        )
+
+    # --------------------------------------------------------
+    # Render output.
+    # --------------------------------------------------------
+
+    result.save(
+        output_path,
+        "JPEG",
+        quality=94,
+        optimize=True
+    )
+
+    # --------------------------------------------------------
+    # Verify.
+    # --------------------------------------------------------
+
+    if not os.path.exists(
+        output_path
+    ):
+
+        raise RuntimeError(
+            "Output image was not created."
+        )
+
+    output_size = os.path.getsize(
+        output_path
+    )
+
+    if output_size <= 0:
+
+        raise RuntimeError(
+            "Output image is empty."
+        )
+
+    log(
+        f"Output created: "
+        f"{output_path}"
+    )
+
+    log(
+        f"Output file size: "
+        f"{output_size} bytes"
+    )
+
     log("")
-    log(
-        "========================================"
-    )
-    log(
-        "STUDIO PROCESSING COMPLETE"
-    )
-    log(
-        "========================================"
-    )
-
-    log(
-        f"Final resolution: {final_image.size}"
-    )
-
-    log(
-        f"Output: {output_path}"
-    )
-
-    log(
-        "========================================"
-    )
+    log("========================================")
+    log("STUDIO PROCESSING COMPLETE")
+    log("========================================")
 
     return output_path
 
@@ -1443,17 +1172,19 @@ def main():
     )
 
     log(
-        f"Python version: {sys.version}"
+        f"Python version: "
+        f"{sys.version}"
     )
 
     if len(sys.argv) < 3:
 
         print(
-            "Usage: python photo_processor.py <input> <output>",
+            "Usage: python photo_processor.py "
+            "<input> <output>",
             flush=True
         )
 
-        sys.exit(1)
+        return 1
 
     input_path = sys.argv[1]
     output_path = sys.argv[2]
@@ -1468,37 +1199,31 @@ def main():
 
     try:
 
-        create_studio_photo(
+        process_studio(
             input_path,
             output_path
         )
 
+        return 0
+
     except Exception as e:
 
         log("")
-        log(
-            "========================================"
-        )
-        log(
-            "STUDIO PROCESSING FAILED"
-        )
-        log(
-            "========================================"
-        )
+        log("========================================")
+        log("STUDIO PROCESSING FAILED")
+        log("========================================")
 
         log(
-            f"ERROR: {e}"
+            f"Error: {e}"
         )
 
         traceback.print_exc()
 
-        sys.exit(1)
+        return 1
 
-
-# ============================================================
-# ENTRY POINT
-# ============================================================
 
 if __name__ == "__main__":
 
-    main()
+    sys.exit(
+        main()
+    )
