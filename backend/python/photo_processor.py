@@ -1,96 +1,111 @@
+
+# ============================================================
+# KARIGARCONNECT STUDIO PHOTO PROCESSOR
+# Render/Linux + Windows compatible
+# Diagnostic version
+# ============================================================
+
+print("PYTHON PROCESS STARTED", flush=True)
+
 import sys
+print("IMPORT: sys OK", flush=True)
+
 import os
-import cv2
-import numpy as np
-import subprocess
-import tempfile
+print("IMPORT: os OK", flush=True)
+
 import traceback
+import tempfile
+import shutil
+import subprocess
+from pathlib import Path
 
-from rembg import remove, new_session
-
-
-# =========================================================
-# CONFIG
-# =========================================================
-
-REMBG_MODEL = "u2netp"
-
-REAL_ESRGAN_EXE = os.path.abspath(
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "tools",
-        "realesrgan",
-        "realesrgan-ncnn-vulkan.exe",
-    )
-)
-
-REAL_ESRGAN_MODEL = "realesrgan-x4plus"
+print("IMPORT: standard libraries OK", flush=True)
 
 
-# =========================================================
-# ENVIRONMENT
-# =========================================================
+# ============================================================
+# THIRD-PARTY IMPORTS
+# ============================================================
 
-IS_WINDOWS = sys.platform == "win32"
-
-# Render/Linux uses CPU.
-# Local Windows machine can use Real-ESRGAN Vulkan.
-IS_RENDER = not IS_WINDOWS
-
-
-# =========================================================
-# STUDIO SIZE
-# =========================================================
-
-# Keep 1080 on local Windows.
-#
-# On Render, 768 is safer for CPU/RAM.
-# The final Render image is still upscaled 4x
-# to 3072 x 3072.
-#
-# You can override this with:
-#
-# STUDIO_CANVAS_SIZE=1080
-#
-# if your Render instance has enough resources.
-
-if IS_RENDER:
-    DEFAULT_CANVAS_SIZE = 768
-else:
-    DEFAULT_CANVAS_SIZE = 1080
+try:
+    print("IMPORT: cv2 starting...", flush=True)
+    import cv2
+    print("IMPORT: cv2 OK", flush=True)
+except Exception as e:
+    print(f"IMPORT ERROR: cv2 -> {e}", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
 
 
 try:
-    CANVAS_SIZE = int(
-        os.environ.get(
-            "STUDIO_CANVAS_SIZE",
-            DEFAULT_CANVAS_SIZE,
-        )
-    )
-except ValueError:
-    CANVAS_SIZE = DEFAULT_CANVAS_SIZE
+    print("IMPORT: numpy starting...", flush=True)
+    import numpy as np
+    print("IMPORT: numpy OK", flush=True)
+except Exception as e:
+    print(f"IMPORT ERROR: numpy -> {e}", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
 
 
-CANVAS_SIZE = max(
-    512,
-    min(CANVAS_SIZE, 1600),
+try:
+    print("IMPORT: PIL starting...", flush=True)
+    from PIL import Image, ImageEnhance, ImageFilter
+    print("IMPORT: PIL OK", flush=True)
+except Exception as e:
+    print(f"IMPORT ERROR: PIL -> {e}", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
+
+
+try:
+    print("IMPORT: rembg starting...", flush=True)
+    from rembg import remove, new_session
+    print("IMPORT: rembg OK", flush=True)
+except Exception as e:
+    print(f"IMPORT ERROR: rembg -> {e}", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+REMBG_MODEL = os.getenv(
+    "REMBG_MODEL",
+    "u2netp"
 )
 
+WINDOWS_UPSCALER = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "tools",
+    "realesrgan",
+    "realesrgan-ncnn-vulkan.exe"
+)
 
-# =========================================================
-# REMBG SESSION
-# =========================================================
+WINDOWS_UPSCALER_MODEL = os.getenv(
+    "REALESRGAN_MODEL",
+    "realesrgan-x4plus"
+)
 
-# IMPORTANT:
-#
-# Do NOT load the rembg model during module import.
-#
-# Render can otherwise appear to hang before the first
-# processing log is printed.
-#
-# The model is loaded only when remove_background()
-# actually needs it.
+DEFAULT_RENDER_CANVAS = 768
+DEFAULT_WINDOWS_CANVAS = 1080
+
+try:
+    CANVAS_SIZE = int(
+        os.getenv(
+            "STUDIO_CANVAS_SIZE",
+            DEFAULT_RENDER_CANVAS
+            if sys.platform != "win32"
+            else DEFAULT_WINDOWS_CANVAS
+        )
+    )
+except Exception:
+    CANVAS_SIZE = DEFAULT_RENDER_CANVAS
+
+
+# ============================================================
+# LAZY REMBG SESSION
+# ============================================================
 
 rembg_session = None
 
@@ -99,1504 +114,753 @@ def get_rembg_session():
     global rembg_session
 
     if rembg_session is None:
-
-        print(
-            "-----------------------------------------",
-            flush=True,
-        )
-
         print(
             f"Loading rembg model: {REMBG_MODEL}",
-            flush=True,
+            flush=True
+        )
+
+        rembg_session = new_session(
+            REMBG_MODEL
         )
 
         print(
-            "This may take some time on the first Render request...",
-            flush=True,
-        )
-
-        try:
-
-            rembg_session = new_session(
-                REMBG_MODEL
-            )
-
-        except Exception as error:
-
-            print(
-                "ERROR: Failed to load rembg model.",
-                flush=True,
-            )
-
-            print(
-                str(error),
-                flush=True,
-            )
-
-            raise
-
-        print(
-            "rembg model loaded successfully.",
-            flush=True,
-        )
-
-        print(
-            "-----------------------------------------",
-            flush=True,
+            "rembg model loaded successfully",
+            flush=True
         )
 
     return rembg_session
 
 
-# =========================================================
-# BACKGROUND REMOVAL
-# =========================================================
+# ============================================================
+# LOGGING
+# ============================================================
 
-def remove_background(
-    input_path,
-    output_path,
-):
+def log(message):
+    print(message, flush=True)
 
-    print(
-        "Reading input image...",
-        flush=True,
-    )
 
-    with open(
-        input_path,
-        "rb",
-    ) as input_file:
+# ============================================================
+# IMAGE LOAD
+# ============================================================
 
-        input_data = input_file.read()
+def load_image(input_path):
+    log(f"Loading image: {input_path}")
 
-    if not input_data:
-
-        raise Exception(
-            "Input image is empty."
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(
+            f"Input image does not exist: {input_path}"
         )
 
-    print(
-        f"Input image size: {len(input_data) / 1024 / 1024:.2f} MB",
-        flush=True,
+    image = Image.open(input_path)
+
+    log(
+        f"Original image: {image.size}, mode={image.mode}"
     )
+
+    return image.convert("RGBA")
+
+
+# ============================================================
+# BACKGROUND REMOVAL
+# ============================================================
+
+def remove_background(image):
+    log("Removing background with rembg...")
 
     session = get_rembg_session()
 
-    print(
-        "Running background removal...",
-        flush=True,
+    result = remove(
+        image,
+        session=session
     )
 
-    try:
+    if result.mode != "RGBA":
+        result = result.convert("RGBA")
 
-        output_data = remove(
-            input_data,
-            session=session,
-        )
+    log("Background removed successfully")
 
-    except Exception as error:
-
-        print(
-            "ERROR during background removal.",
-            flush=True,
-        )
-
-        print(
-            str(error),
-            flush=True,
-        )
-
-        raise
-
-    if not output_data:
-
-        raise Exception(
-            "Background removal returned empty output."
-        )
-
-    with open(
-        output_path,
-        "wb",
-    ) as output_file:
-
-        output_file.write(
-            output_data
-        )
-
-    print(
-        "Background removal completed.",
-        flush=True,
-    )
+    return result
 
 
-# =========================================================
+# ============================================================
 # SMART CROP
-# =========================================================
+# ============================================================
 
 def smart_crop(image):
+    log("Creating smart crop...")
 
-    if image is None:
+    alpha = image.getchannel("A")
 
-        raise Exception(
-            "Invalid image supplied to smart_crop()."
+    bbox = alpha.getbbox()
+
+    if not bbox:
+        log(
+            "No alpha bounding box found. Using full image."
         )
 
-    if len(image.shape) != 3:
+        return image
 
-        raise Exception(
-            "Image does not have valid dimensions."
-        )
+    left, top, right, bottom = bbox
 
-    if image.shape[2] < 4:
+    width = right - left
+    height = bottom - top
 
-        raise Exception(
-            "Image does not contain an alpha channel."
-        )
+    padding_x = int(width * 0.15)
+    padding_y = int(height * 0.15)
 
-    alpha = image[:, :, 3]
-
-    mask = np.where(
-        alpha > 20,
-        255,
-        0,
-    ).astype(np.uint8)
-
-    kernel = np.ones(
-        (5, 5),
-        np.uint8,
-    )
-
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_OPEN,
-        kernel,
-    )
-
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_CLOSE,
-        kernel,
-    )
-
-    coords = cv2.findNonZero(
-        mask
-    )
-
-    if coords is None:
-
-        raise Exception(
-            "Could not detect product after background removal."
-        )
-
-    x, y, width, height = cv2.boundingRect(
-        coords
-    )
-
-    if width <= 0 or height <= 0:
-
-        raise Exception(
-            "Detected product has invalid dimensions."
-        )
-
-    padding = int(
-        max(width, height) * 0.16
-    )
-
-    left = max(
-        0,
-        x - padding,
-    )
-
-    top = max(
-        0,
-        y - padding,
-    )
+    left = max(0, left - padding_x)
+    top = max(0, top - padding_y)
 
     right = min(
-        image.shape[1],
-        x + width + padding,
+        image.width,
+        right + padding_x
     )
 
     bottom = min(
-        image.shape[0],
-        y + height + padding,
+        image.height,
+        bottom + padding_y
     )
 
-    cropped = image[
-        top:bottom,
-        left:right,
-    ]
+    cropped = image.crop(
+        (left, top, right, bottom)
+    )
 
-    if cropped.size == 0:
-
-        raise Exception(
-            "Smart crop produced an empty image."
-        )
+    log(
+        f"Smart crop: {cropped.size}"
+    )
 
     return cropped
 
 
-# =========================================================
-# STUDIO BACKGROUND
-# =========================================================
+# ============================================================
+# RESIZE PRODUCT
+# ============================================================
 
-def create_studio_background(size):
-
-    y = np.linspace(
-        0,
-        1,
-        size,
-        dtype=np.float32,
-    ).reshape(
-        -1,
-        1,
+def resize_product(image, canvas_size):
+    log(
+        f"Resizing product for {canvas_size}x{canvas_size} canvas..."
     )
 
-    top = 252.0
-    bottom = 241.0
-
-    brightness = (
-        top * (1 - y)
-        + bottom * y
+    max_product_size = int(
+        canvas_size * 0.72
     )
 
-    brightness = np.repeat(
-        brightness,
-        size,
-        axis=1,
-    )
-
-    background = np.zeros(
-        (
-            size,
-            size,
-            3,
-        ),
-        dtype=np.uint8,
-    )
-
-    background[:, :, 0] = np.clip(
-        brightness + 1,
-        0,
-        255,
-    )
-
-    background[:, :, 1] = np.clip(
-        brightness,
-        0,
-        255,
-    )
-
-    background[:, :, 2] = np.clip(
-        brightness - 1,
-        0,
-        255,
-    )
-
-    return background
-
-
-# =========================================================
-# LIGHTING
-# =========================================================
-
-def create_light_map(size):
-
-    axis = np.linspace(
-        -1,
-        1,
-        size,
-        dtype=np.float32,
-    )
-
-    x, y = np.meshgrid(
-        axis,
-        axis,
-    )
-
-    distance = (
-        ((x + 0.32) ** 2) * 1.2
-        + ((y + 0.40) ** 2) * 1.7
-    )
-
-    return np.exp(
-        -distance * 2.2
-    )
-
-
-def apply_product_lighting(
-    product,
-    light_map,
-):
-
-    if product.shape[2] != 4:
-
-        raise Exception(
-            "Product must contain RGBA channels."
-        )
-
-    rgb = product[
-        :, :, :3
-    ].astype(
-        np.float32
-    )
-
-    alpha = (
-        product[
-            :, :, 3
-        ].astype(
-            np.float32
-        )
-        / 255.0
-    )
-
-    product_height = product.shape[0]
-    product_width = product.shape[1]
-
-    product_light = cv2.resize(
-        light_map,
-        (
-            product_width,
-            product_height,
-        ),
-        interpolation=cv2.INTER_LINEAR,
-    )
-
-    multiplier = (
-        1.0
-        + product_light * 0.10
-    )
-
-    rgb *= multiplier[:, :, None]
-
-    # Slight warm highlight.
-    rgb[:, :, 2] += (
-        product_light * 1.5
-    )
-
-    rgb = np.clip(
-        rgb,
-        0,
-        255,
-    )
-
-    product[
-        :, :, :3
-    ] = rgb.astype(
-        np.uint8
-    )
-
-    return product
-
-
-# =========================================================
-# PRODUCT RESIZE
-# =========================================================
-
-def resize_product(
-    product,
-    canvas_size,
-):
-
-    height = product.shape[0]
-    width = product.shape[1]
-
-    if width <= 0 or height <= 0:
-
-        raise Exception(
-            "Product has invalid dimensions."
-        )
-
-    max_dimension = int(
-        canvas_size * 0.78
-    )
+    width, height = image.size
 
     scale = min(
-        max_dimension / width,
-        max_dimension / height,
-    )
-
-    # Never upscale here.
-    #
-    # The final high-resolution upscale is handled later.
-    scale = min(
-        scale,
-        1.0,
+        max_product_size / width,
+        max_product_size / height
     )
 
     new_width = max(
         1,
-        int(width * scale),
+        int(width * scale)
     )
 
     new_height = max(
         1,
-        int(height * scale),
+        int(height * scale)
     )
 
-    resized = cv2.resize(
-        product,
-        (
-            new_width,
-            new_height,
-        ),
-        interpolation=(
-            cv2.INTER_AREA
-            if scale < 1
-            else cv2.INTER_LANCZOS4
-        ),
+    resized = image.resize(
+        (new_width, new_height),
+        Image.Resampling.LANCZOS
+    )
+
+    log(
+        f"Product resized: {resized.size}"
     )
 
     return resized
 
 
-# =========================================================
+# ============================================================
+# STUDIO BACKGROUND
+# ============================================================
+
+def create_studio_background(size):
+    log(
+        f"Creating studio background: {size}x{size}"
+    )
+
+    background = np.zeros(
+        (size, size, 4),
+        dtype=np.uint8
+    )
+
+    # Warm neutral studio background.
+    top_color = np.array(
+        [248, 245, 238, 255],
+        dtype=np.float32
+    )
+
+    bottom_color = np.array(
+        [225, 220, 210, 255],
+        dtype=np.float32
+    )
+
+    for y in range(size):
+        ratio = y / max(1, size - 1)
+
+        color = (
+            top_color * (1 - ratio)
+            + bottom_color * ratio
+        ).astype(np.uint8)
+
+        background[y, :, :] = color
+
+    return Image.fromarray(
+        background,
+        "RGBA"
+    )
+
+
+# ============================================================
+# LIGHTING
+# ============================================================
+
+def apply_lighting(image):
+    log("Applying product lighting...")
+
+    rgb = image.convert("RGB")
+
+    brightness = ImageEnhance.Brightness(
+        rgb
+    )
+
+    rgb = brightness.enhance(1.05)
+
+    contrast = ImageEnhance.Contrast(
+        rgb
+    )
+
+    rgb = contrast.enhance(1.04)
+
+    return rgb.convert("RGBA")
+
+
+# ============================================================
 # SHADOW
-# =========================================================
+# ============================================================
 
-def create_shadow(
-    product,
-    canvas_size,
-    offset_x,
-    offset_y,
-):
+def create_shadow(product, canvas_size):
+    log("Creating product shadow...")
 
-    alpha = product[
-        :, :, 3
-    ]
+    alpha = product.getchannel("A")
 
-    mask = np.where(
-        alpha > 30,
-        255,
-        0,
-    ).astype(np.uint8)
-
-    coords = cv2.findNonZero(
-        mask
-    )
-
-    shadow = np.zeros(
-        (
-            canvas_size,
-            canvas_size,
-        ),
-        dtype=np.uint8,
-    )
-
-    if coords is None:
-
-        return shadow
-
-    x, y, width, height = cv2.boundingRect(
-        coords
-    )
-
-    absolute_x = (
-        offset_x + x
-    )
-
-    absolute_y = (
-        offset_y + y
-    )
-
-    center_x = (
-        absolute_x
-        + width // 2
-    )
-
-    center_y = (
-        absolute_y
-        + height
-        - max(
-            5,
-            int(height * 0.025),
+    shadow_alpha = alpha.filter(
+        ImageFilter.GaussianBlur(
+            radius=max(
+                4,
+                int(canvas_size * 0.012)
+            )
         )
     )
 
-    ellipse_width = max(
-        30,
-        int(width * 0.38),
+    shadow = Image.new(
+        "RGBA",
+        product.size,
+        (0, 0, 0, 0)
     )
 
-    ellipse_height = max(
-        9,
-        int(height * 0.035),
-    )
-
-    # Prevent ellipse from going outside canvas.
-
-    center_x = max(
-        0,
-        min(
-            center_x,
-            canvas_size - 1,
-        ),
-    )
-
-    center_y = max(
-        0,
-        min(
-            center_y,
-            canvas_size - 1,
-        ),
-    )
-
-    cv2.ellipse(
-        shadow,
-        (
-            center_x,
-            center_y,
-        ),
-        (
-            min(
-                ellipse_width,
-                canvas_size // 2,
-            ),
-            min(
-                ellipse_height,
-                canvas_size // 2,
-            ),
-        ),
-        0,
-        0,
-        360,
-        110,
-        -1,
-    )
-
-    shadow = cv2.GaussianBlur(
-        shadow,
-        (0, 0),
-        sigmaX=16,
+    shadow.putalpha(
+        shadow_alpha.point(
+            lambda p: int(p * 0.22)
+        )
     )
 
     return shadow
 
 
-def blend_shadow(
-    background,
-    shadow,
-):
-
-    shadow_float = (
-        shadow.astype(
-            np.float32
-        )
-        / 255.0
-    )
-
-    opacity = (
-        shadow_float[:, :, None]
-        * 0.20
-    )
-
-    result = (
-        background.astype(
-            np.float32
-        )
-        * (
-            1
-            - opacity
-        )
-    )
-
-    return np.clip(
-        result,
-        0,
-        255,
-    ).astype(
-        np.uint8
-    )
-
-
-# =========================================================
+# ============================================================
 # COMPOSITING
-# =========================================================
+# ============================================================
 
 def composite_product(
     background,
     product,
+    canvas_size
 ):
+    log("Compositing product...")
 
-    canvas = background.copy()
-
-    canvas_size = canvas.shape[0]
-
-    product_height = product.shape[0]
-    product_width = product.shape[1]
-
-    offset_x = (
-        canvas_size
-        - product_width
+    x = (
+        canvas_size - product.width
     ) // 2
 
-    offset_y = (
-        canvas_size
-        - product_height
+    y = (
+        canvas_size - product.height
     ) // 2
 
-    offset_y += int(
+    # Slightly lower than absolute center
+    # for a product photography look.
+    y += int(
         canvas_size * 0.035
-    )
-
-    offset_y = max(
-        0,
-        min(
-            offset_y,
-            canvas_size
-            - product_height,
-        ),
     )
 
     shadow = create_shadow(
         product,
-        canvas_size,
-        offset_x,
-        offset_y,
+        canvas_size
     )
 
-    canvas = blend_shadow(
-        canvas,
+    shadow_x = x
+    shadow_y = min(
+        canvas_size - shadow.height,
+        y + int(
+            canvas_size * 0.025
+        )
+    )
+
+    background.alpha_composite(
         shadow,
-    )
-
-    region = canvas[
-        offset_y:
-        offset_y + product_height,
-        offset_x:
-        offset_x + product_width,
-    ].astype(
-        np.float32
-    )
-
-    product_rgb = product[
-        :, :, :3
-    ].astype(
-        np.float32
-    )
-
-    alpha = (
-        product[
-            :, :, 3
-        ].astype(
-            np.float32
-        )
-        / 255.0
-    )
-
-    result = (
-        product_rgb
-        * alpha[:, :, None]
-        + region
-        * (
-            1
-            - alpha[:, :, None]
+        (
+            shadow_x,
+            shadow_y
         )
     )
 
-    canvas[
-        offset_y:
-        offset_y + product_height,
-        offset_x:
-        offset_x + product_width,
-    ] = np.clip(
-        result,
-        0,
-        255,
-    ).astype(
-        np.uint8
+    background.alpha_composite(
+        product,
+        (
+            x,
+            y
+        )
     )
 
-    return canvas
+    return background
 
 
-# =========================================================
-# FINAL OPENCV ENHANCEMENT
-# =========================================================
+# ============================================================
+# OPENCV ENHANCEMENT
+# ============================================================
 
 def enhance_image(image):
+    log("Applying OpenCV enhancement...")
 
-    enhanced = cv2.convertScaleAbs(
-        image,
-        alpha=1.025,
-        beta=2,
-    )
+    rgb = image.convert("RGB")
 
+    array = np.array(rgb)
+
+    # Mild sharpening.
     blurred = cv2.GaussianBlur(
-        enhanced,
+        array,
         (0, 0),
-        0.8,
+        1.0
     )
 
     sharpened = cv2.addWeighted(
-        enhanced,
-        1.08,
+        array,
+        1.12,
         blurred,
-        -0.08,
-        0,
+        -0.12,
+        0
     )
 
-    return sharpened
-
-
-# =========================================================
-# CPU UPSCALE
-# =========================================================
-
-def upscale_cpu(
-    input_path,
-    output_path,
-):
-
-    print(
-        "Render/Linux detected.",
-        flush=True,
+    # Small contrast improvement.
+    lab = cv2.cvtColor(
+        sharpened,
+        cv2.COLOR_RGB2LAB
     )
 
-    print(
-        "Using CPU-safe OpenCV 4x upscale.",
-        flush=True,
+    l_channel, a_channel, b_channel = cv2.split(
+        lab
     )
 
-    image = cv2.imread(
-        input_path,
-        cv2.IMREAD_COLOR,
+    clahe = cv2.createCLAHE(
+        clipLimit=1.5,
+        tileGridSize=(8, 8)
     )
 
-    if image is None:
-
-        raise Exception(
-            "Could not read image for CPU upscaling."
-        )
-
-    height, width = image.shape[:2]
-
-    print(
-        f"Input for CPU upscale: {width} x {height}",
-        flush=True,
+    l_channel = clahe.apply(
+        l_channel
     )
 
-    target_width = width * 4
-    target_height = height * 4
-
-    print(
-        f"CPU upscale target: {target_width} x {target_height}",
-        flush=True,
+    enhanced_lab = cv2.merge(
+        [
+            l_channel,
+            a_channel,
+            b_channel
+        ]
     )
+
+    enhanced = cv2.cvtColor(
+        enhanced_lab,
+        cv2.COLOR_LAB2RGB
+    )
+
+    return Image.fromarray(
+        enhanced
+    )
+
+
+# ============================================================
+# CPU UPSCALE FOR RENDER
+# ============================================================
+
+def upscale_cpu(image, target_size):
+    log(
+        f"Render/Linux CPU upscale to {target_size}x{target_size}..."
+    )
+
+    image = image.convert("RGB")
+
+    array = np.array(image)
 
     upscaled = cv2.resize(
-        image,
+        array,
         (
-            target_width,
-            target_height,
+            target_size,
+            target_size
         ),
-        interpolation=cv2.INTER_CUBIC,
+        interpolation=cv2.INTER_CUBIC
     )
 
-    success = cv2.imwrite(
-        output_path,
-        upscaled,
-        [
-            cv2.IMWRITE_PNG_COMPRESSION,
-            3,
-        ],
-    )
-
-    if not success:
-
-        raise Exception(
-            "Could not save CPU-upscaled image."
-        )
-
-    print(
-        "CPU upscale complete.",
-        flush=True,
+    return Image.fromarray(
+        upscaled
     )
 
 
-# =========================================================
-# WINDOWS REAL-ESRGAN UPSCALE
-# =========================================================
+# ============================================================
+# WINDOWS REAL-ESRGAN
+# ============================================================
 
-def upscale_windows_realesrgan(
-    input_path,
-    output_path,
+def upscale_windows(
+    image,
+    output_path
 ):
+    log("Attempting Windows Real-ESRGAN upscale...")
 
     if not os.path.exists(
-        REAL_ESRGAN_EXE
+        WINDOWS_UPSCALER
     ):
-
-        raise Exception(
-            "Real-ESRGAN executable not found:\n"
-            + REAL_ESRGAN_EXE
+        log(
+            "Real-ESRGAN executable not found."
         )
 
-    print(
-        "Windows detected.",
-        flush=True,
-    )
+        return None
 
-    print(
-        "Running Real-ESRGAN 4x upscaling...",
-        flush=True,
-    )
-
-    command = [
-        REAL_ESRGAN_EXE,
-        "-i",
-        input_path,
-        "-o",
-        output_path,
-        "-s",
-        "4",
-        "-n",
-        REAL_ESRGAN_MODEL,
-    ]
-
-    print(
-        "Starting Real-ESRGAN process...",
-        flush=True,
+    temp_dir = tempfile.mkdtemp(
+        prefix="karigar_studio_"
     )
 
     try:
+        input_file = os.path.join(
+            temp_dir,
+            "input.png"
+        )
+
+        output_dir = os.path.join(
+            temp_dir,
+            "output"
+        )
+
+        os.makedirs(
+            output_dir,
+            exist_ok=True
+        )
+
+        image.convert(
+            "RGB"
+        ).save(
+            input_file,
+            "PNG"
+        )
+
+        command = [
+            WINDOWS_UPSCALER,
+            "-i",
+            input_file,
+            "-o",
+            output_dir,
+            "-n",
+            WINDOWS_UPSCALER_MODEL,
+            "-s",
+            "4"
+        ]
+
+        log(
+            "Running Real-ESRGAN..."
+        )
 
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
-            check=False,
-            timeout=300,
+            timeout=300
         )
+
+        if result.stdout:
+            log(
+                result.stdout.strip()
+            )
+
+        if result.stderr:
+            log(
+                result.stderr.strip()
+            )
+
+        if result.returncode != 0:
+            log(
+                f"Real-ESRGAN failed with code {result.returncode}"
+            )
+
+            return None
+
+        generated_files = list(
+            Path(output_dir).glob("*")
+        )
+
+        if not generated_files:
+            log(
+                "Real-ESRGAN produced no output."
+            )
+
+            return None
+
+        generated = generated_files[0]
+
+        result_image = Image.open(
+            generated
+        ).convert("RGB")
+
+        log(
+            f"Real-ESRGAN output: {result_image.size}"
+        )
+
+        return result_image
 
     except subprocess.TimeoutExpired:
-
-        raise Exception(
-            "Real-ESRGAN timed out after 300 seconds."
+        log(
+            "Real-ESRGAN timed out."
         )
 
-    except Exception as error:
-
-        raise Exception(
-            f"Could not start Real-ESRGAN: {error}"
-        )
-
-    if result.stdout:
-
-        print(
-            result.stdout,
-            flush=True,
-        )
-
-    if result.stderr:
-
-        print(
-            result.stderr,
-            flush=True,
-        )
-
-    if result.returncode != 0:
-
-        raise Exception(
-            "Real-ESRGAN upscaling failed "
-            f"with exit code {result.returncode}."
-        )
-
-    if not os.path.exists(
-        output_path
-    ):
-
-        raise Exception(
-            "Real-ESRGAN finished but "
-            "the upscaled image was not created."
-        )
-
-    print(
-        "Real-ESRGAN upscale complete.",
-        flush=True,
-    )
-
-
-# =========================================================
-# PLATFORM-AWARE UPSCALING
-# =========================================================
-
-def upscale_with_realesrgan(
-    input_path,
-    output_path,
-):
-
-    if IS_RENDER:
-
-        upscale_cpu(
-            input_path,
-            output_path,
-        )
-
-    else:
-
-        upscale_windows_realesrgan(
-            input_path,
-            output_path,
-        )
-
-
-# =========================================================
-# FINAL OUTPUT
-# =========================================================
-
-def save_final_output(
-    input_path,
-    output_path,
-):
-
-    print(
-        "Reading upscaled image...",
-        flush=True,
-    )
-
-    final_image = cv2.imread(
-        input_path,
-        cv2.IMREAD_COLOR,
-    )
-
-    if final_image is None:
-
-        raise Exception(
-            "Could not read upscaled output."
-        )
-
-    final_image = cv2.convertScaleAbs(
-        final_image,
-        alpha=1.01,
-        beta=0,
-    )
-
-    success = cv2.imwrite(
-        output_path,
-        final_image,
-        [
-            cv2.IMWRITE_JPEG_QUALITY,
-            95,
-        ],
-    )
-
-    if not success:
-
-        raise Exception(
-            "Could not save final Studio image."
-        )
-
-    height, width = final_image.shape[:2]
-
-    print(
-        f"Final resolution: {width} x {height}",
-        flush=True,
-    )
-
-    print(
-        f"Final file: {output_path}",
-        flush=True,
-    )
-
-
-# =========================================================
-# COMPLETE STUDIO PIPELINE
-# =========================================================
-
-def create_studio_photo(
-    input_path,
-    output_path,
-):
-
-    if not os.path.exists(
-        input_path
-    ):
-
-        raise Exception(
-            f"Input file not found: {input_path}"
-        )
-
-    working_dir = os.path.dirname(
-        os.path.abspath(
-            output_path
-        )
-    )
-
-    os.makedirs(
-        working_dir,
-        exist_ok=True,
-    )
-
-    # -----------------------------------------------------
-    # UNIQUE TEMP DIRECTORY
-    # -----------------------------------------------------
-    #
-    # This is important for Render.
-    #
-    # Multiple requests can happen at the same time.
-    # Using "_temp_nobg.png" globally could cause requests
-    # to overwrite each other's files.
-    #
-
-    temp_dir = tempfile.mkdtemp(
-        prefix="studio_",
-        dir=working_dir,
-    )
-
-    temp_no_bg = os.path.join(
-        temp_dir,
-        "nobg.png",
-    )
-
-    temp_opencv = os.path.join(
-        temp_dir,
-        "studio.jpg",
-    )
-
-    temp_upscaled = os.path.join(
-        temp_dir,
-        "upscaled.png",
-    )
-
-    try:
-
-        print(
-            "",
-            flush=True,
-        )
-
-        print(
-            "=========================================",
-            flush=True,
-        )
-
-        print(
-            "STARTING STUDIO PHOTO PROCESSING",
-            flush=True,
-        )
-
-        print(
-            f"Platform: {sys.platform}",
-            flush=True,
-        )
-
-        print(
-            f"Canvas size: {CANVAS_SIZE} x {CANVAS_SIZE}",
-            flush=True,
-        )
-
-        print(
-            f"Input: {input_path}",
-            flush=True,
-        )
-
-        print(
-            f"Output: {output_path}",
-            flush=True,
-        )
-
-        print(
-            "=========================================",
-            flush=True,
-        )
-
-        # -------------------------------------------------
-        # 1. BACKGROUND REMOVAL
-        # -------------------------------------------------
-
-        print(
-            "1/7 Removing background...",
-            flush=True,
-        )
-
-        remove_background(
-            input_path,
-            temp_no_bg,
-        )
-
-        if not os.path.exists(
-            temp_no_bg
-        ):
-
-            raise Exception(
-                "Background removal completed "
-                "but output file does not exist."
-            )
-
-        # -------------------------------------------------
-        # READ RGBA
-        # -------------------------------------------------
-
-        print(
-            "Reading background-removed image...",
-            flush=True,
-        )
-
-        image = cv2.imread(
-            temp_no_bg,
-            cv2.IMREAD_UNCHANGED,
-        )
-
-        if image is None:
-
-            raise Exception(
-                "Could not read background-removed image."
-            )
-
-        print(
-            f"Background-removed dimensions: "
-            f"{image.shape[1]} x {image.shape[0]}",
-            flush=True,
-        )
-
-        # -------------------------------------------------
-        # ENSURE RGBA
-        # -------------------------------------------------
-
-        if len(image.shape) != 3:
-
-            raise Exception(
-                "Processed image does not have valid channels."
-            )
-
-        if image.shape[2] == 3:
-
-            print(
-                "No alpha channel detected. "
-                "Creating opaque alpha channel.",
-                flush=True,
-            )
-
-            alpha = np.full(
-                (
-                    image.shape[0],
-                    image.shape[1],
-                ),
-                255,
-                dtype=np.uint8,
-            )
-
-            image = cv2.cvtColor(
-                image,
-                cv2.COLOR_BGR2BGRA,
-            )
-
-        elif image.shape[2] != 4:
-
-            raise Exception(
-                "Processed image does not have "
-                "3 or 4 channels."
-            )
-
-        # -------------------------------------------------
-        # 2. SMART CROP
-        # -------------------------------------------------
-
-        print(
-            "2/7 Detecting product...",
-            flush=True,
-        )
-
-        product = smart_crop(
-            image
-        )
-
-        print(
-            f"Detected product crop: "
-            f"{product.shape[1]} x {product.shape[0]}",
-            flush=True,
-        )
-
-        # -------------------------------------------------
-        # 3. BACKGROUND
-        # -------------------------------------------------
-
-        print(
-            "3/7 Creating studio background...",
-            flush=True,
-        )
-
-        background = create_studio_background(
-            CANVAS_SIZE
-        )
-
-        # -------------------------------------------------
-        # 4. LIGHTING
-        # -------------------------------------------------
-
-        print(
-            "4/7 Applying professional lighting...",
-            flush=True,
-        )
-
-        product = resize_product(
-            product,
-            CANVAS_SIZE,
-        )
-
-        print(
-            f"Product after resize: "
-            f"{product.shape[1]} x {product.shape[0]}",
-            flush=True,
-        )
-
-        light_map = create_light_map(
-            CANVAS_SIZE
-        )
-
-        product = apply_product_lighting(
-            product,
-            light_map,
-        )
-
-        # -------------------------------------------------
-        # 5. COMPOSITION
-        # -------------------------------------------------
-
-        print(
-            "5/7 Adding shadow and composition...",
-            flush=True,
-        )
-
-        final_image = composite_product(
-            background,
-            product,
-        )
-
-        # -------------------------------------------------
-        # 6. ENHANCEMENT
-        # -------------------------------------------------
-
-        print(
-            "6/7 Applying OpenCV enhancement...",
-            flush=True,
-        )
-
-        final_image = enhance_image(
-            final_image
-        )
-
-        # Ensure exact canvas size.
-
-        if (
-            final_image.shape[1] != CANVAS_SIZE
-            or final_image.shape[0] != CANVAS_SIZE
-        ):
-
-            final_image = cv2.resize(
-                final_image,
-                (
-                    CANVAS_SIZE,
-                    CANVAS_SIZE,
-                ),
-                interpolation=cv2.INTER_LANCZOS4,
-            )
-
-        success = cv2.imwrite(
-            temp_opencv,
-            final_image,
-            [
-                cv2.IMWRITE_JPEG_QUALITY,
-                95,
-            ],
-        )
-
-        if not success:
-
-            raise Exception(
-                "Could not save OpenCV Studio image."
-            )
-
-        print(
-            f"OpenCV Studio image created: "
-            f"{CANVAS_SIZE} x {CANVAS_SIZE}",
-            flush=True,
-        )
-
-        # -------------------------------------------------
-        # 7. UPSCALE
-        # -------------------------------------------------
-
-        print(
-            "7/7 Upscaling to high resolution...",
-            flush=True,
-        )
-
-        upscale_with_realesrgan(
-            temp_opencv,
-            temp_upscaled,
-        )
-
-        if not os.path.exists(
-            temp_upscaled
-        ):
-
-            raise Exception(
-                "Upscaling finished but output file "
-                "does not exist."
-            )
-
-        # -------------------------------------------------
-        # SAVE FINAL JPG
-        # -------------------------------------------------
-
-        print(
-            "Saving final Studio JPG...",
-            flush=True,
-        )
-
-        save_final_output(
-            temp_upscaled,
-            output_path,
-        )
-
-        if not os.path.exists(
-            output_path
-        ):
-
-            raise Exception(
-                "Final Studio image was not created."
-            )
-
-        print(
-            "=========================================",
-            flush=True,
-        )
-
-        print(
-            "STUDIO PROCESSING SUCCESS",
-            flush=True,
-        )
-
-        print(
-            "=========================================",
-            flush=True,
-        )
-
-    except Exception as error:
-
-        print(
-            "",
-            flush=True,
-        )
-
-        print(
-            "=========================================",
-            flush=True,
-        )
-
-        print(
-            "STUDIO PROCESSING FAILED",
-            flush=True,
-        )
-
-        print(
-            f"ERROR: {error}",
-            flush=True,
-        )
-
-        print(
-            "=========================================",
-            flush=True,
+        return None
+
+    except Exception as e:
+        log(
+            f"Real-ESRGAN error: {e}"
         )
 
         traceback.print_exc()
 
-        raise
+        return None
 
     finally:
-
-        # -------------------------------------------------
-        # CLEAN TEMP FILES
-        # -------------------------------------------------
-
-        for temp_file in [
-            temp_no_bg,
-            temp_opencv,
-            temp_upscaled,
-        ]:
-
-            if os.path.exists(
-                temp_file
-            ):
-
-                try:
-
-                    os.remove(
-                        temp_file
-                    )
-
-                except OSError:
-
-                    pass
-
-        try:
-
-            if os.path.exists(
-                temp_dir
-            ):
-
-                os.rmdir(
-                    temp_dir
-                )
-
-        except OSError:
-
-            pass
-
-
-# =========================================================
-# COMMAND LINE
-# =========================================================
-
-def main():
-
-    print(
-        "=========================================",
-        flush=True,
-    )
-
-    print(
-        "KarigarConnect Studio Photo Processor",
-        flush=True,
-    )
-
-    print(
-        f"Python: {sys.version}",
-        flush=True,
-    )
-
-    print(
-        f"Platform: {sys.platform}",
-        flush=True,
-    )
-
-    print(
-        f"Render/Linux mode: {IS_RENDER}",
-        flush=True,
-    )
-
-    print(
-        f"Canvas: {CANVAS_SIZE} x {CANVAS_SIZE}",
-        flush=True,
-    )
-
-    print(
-        "=========================================",
-        flush=True,
-    )
-
-    if len(sys.argv) != 3:
-
-        print(
-            "Usage:",
-            flush=True,
+        shutil.rmtree(
+            temp_dir,
+            ignore_errors=True
         )
 
+
+# ============================================================
+# FINAL OUTPUT
+# ============================================================
+
+def save_final(
+    image,
+    output_path
+):
+    log(
+        f"Saving final image: {output_path}"
+    )
+
+    output_parent = os.path.dirname(
+        output_path
+    )
+
+    if output_parent:
+        os.makedirs(
+            output_parent,
+            exist_ok=True
+        )
+
+    image = image.convert(
+        "RGB"
+    )
+
+    image.save(
+        output_path,
+        "JPEG",
+        quality=95,
+        optimize=True
+    )
+
+    if not os.path.exists(
+        output_path
+    ):
+        raise RuntimeError(
+            "Output image was not created."
+        )
+
+    size = os.path.getsize(
+        output_path
+    )
+
+    if size <= 0:
+        raise RuntimeError(
+            "Output image is empty."
+        )
+
+    log(
+        f"Final output saved: {size} bytes"
+    )
+
+
+# ============================================================
+# MAIN STUDIO PIPELINE
+# ============================================================
+
+def create_studio_photo(
+    input_path,
+    output_path
+):
+    log("")
+    log("========================================")
+    log("KARIGARCONNECT STUDIO PROCESSOR")
+    log("========================================")
+
+    log(
+        f"Input: {input_path}"
+    )
+
+    log(
+        f"Output: {output_path}"
+    )
+
+    log(
+        f"Platform: {sys.platform}"
+    )
+
+    log(
+        f"Canvas size: {CANVAS_SIZE}x{CANVAS_SIZE}"
+    )
+
+    # --------------------------------------------------------
+    # 1/7 LOAD
+    # --------------------------------------------------------
+
+    log("1/7 Loading product image...")
+
+    image = load_image(
+        input_path
+    )
+
+    # --------------------------------------------------------
+    # 2/7 BACKGROUND
+    # --------------------------------------------------------
+
+    log("2/7 Removing background...")
+
+    product = remove_background(
+        image
+    )
+
+    # --------------------------------------------------------
+    # 3/7 CROP
+    # --------------------------------------------------------
+
+    log("3/7 Smart cropping product...")
+
+    product = smart_crop(
+        product
+    )
+
+    # --------------------------------------------------------
+    # 4/7 RESIZE
+    # --------------------------------------------------------
+
+    log("4/7 Preparing product...")
+
+    product = resize_product(
+        product,
+        CANVAS_SIZE
+    )
+
+    product = apply_lighting(
+        product
+    )
+
+    # --------------------------------------------------------
+    # 5/7 BACKGROUND + SHADOW
+    # --------------------------------------------------------
+
+    log("5/7 Creating studio scene...")
+
+    background = create_studio_background(
+        CANVAS_SIZE
+    )
+
+    composed = composite_product(
+        background,
+        product,
+        CANVAS_SIZE
+    )
+
+    # --------------------------------------------------------
+    # 6/7 ENHANCEMENT
+    # --------------------------------------------------------
+
+    log("6/7 Enhancing final image...")
+
+    enhanced = enhance_image(
+        composed
+    )
+
+    # --------------------------------------------------------
+    # 7/7 UPSCALE + SAVE
+    # --------------------------------------------------------
+
+    log("7/7 Upscaling and saving...")
+
+    final_image = None
+
+    if sys.platform == "win32":
+        final_image = upscale_windows(
+            enhanced,
+            output_path
+        )
+
+    if final_image is None:
+        final_image = upscale_cpu(
+            enhanced,
+            CANVAS_SIZE
+        )
+
+    save_final(
+        final_image,
+        output_path
+    )
+
+    log("")
+    log("========================================")
+    log("STUDIO PROCESSING COMPLETE")
+    log("========================================")
+    log(
+        f"Final resolution: {final_image.size}"
+    )
+    log(
+        f"Output: {output_path}"
+    )
+    log("========================================")
+
+    return output_path
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def main():
+    log("")
+    log("KarigarConnect Studio Photo Processor")
+    log("CLI started")
+    log(
+        f"Python version: {sys.version}"
+    )
+
+    if len(sys.argv) < 3:
         print(
-            "python photo_processor.py input.jpg output.jpg",
-            flush=True,
+            "Usage: python photo_processor.py <input> <output>",
+            flush=True
         )
 
         sys.exit(1)
@@ -1604,78 +868,38 @@ def main():
     input_path = sys.argv[1]
     output_path = sys.argv[2]
 
-    if not os.path.exists(
-        input_path
-    ):
+    log(
+        f"CLI input: {input_path}"
+    )
 
-        print(
-            "ERROR",
-            flush=True,
-        )
-
-        print(
-            f"Input file not found: {input_path}",
-            flush=True,
-        )
-
-        sys.exit(1)
+    log(
+        f"CLI output: {output_path}"
+    )
 
     try:
-
         create_studio_photo(
             input_path,
-            output_path,
+            output_path
         )
 
-        print(
-            "",
-            flush=True,
+    except Exception as e:
+        log("")
+        log("========================================")
+        log("STUDIO PROCESSING FAILED")
+        log("========================================")
+        log(
+            f"ERROR: {e}"
         )
 
-        print(
-            "=================================",
-            flush=True,
-        )
-
-        print(
-            "SUCCESS",
-            flush=True,
-        )
-
-        print(
-            f"Final image: {output_path}",
-            flush=True,
-        )
-
-        print(
-            "=================================",
-            flush=True,
-        )
-
-    except Exception as error:
-
-        print(
-            "",
-            flush=True,
-        )
-
-        print(
-            "ERROR",
-            flush=True,
-        )
-
-        print(
-            str(error),
-            flush=True,
-        )
+        traceback.print_exc()
 
         sys.exit(1)
 
 
-# =========================================================
+# ============================================================
 # ENTRY POINT
-# =========================================================
+# ============================================================
 
 if __name__ == "__main__":
-
     main()
+
