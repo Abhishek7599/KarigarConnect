@@ -1256,8 +1256,15 @@ function Photoshoot({
   const [preview, setPreview] =
     useState("");
 
-  const [selectedStyle, setSelectedStyle] =
-    useState("studio");
+  // A merchant can create any combination of the four deliverables. Keeping
+  // this as an array (rather than a single active style) prevents the UI from
+  // implying a choice that the backend then ignores.
+  const [selectedStyles, setSelectedStyles] =
+    useState(() => styles.map((style) => style.id));
+
+  // Retained for the legacy one-style generator below while the multi-style
+  // workflow is the active UI path.
+  const selectedStyle = selectedStyles[0] || "studio";
 
   const [selectedCategory, setSelectedCategory] =
     useState(
@@ -1605,9 +1612,16 @@ function Photoshoot({
       return;
     }
 
-    setSelectedStyle(
-      style.id
-    );
+    setSelectedStyles((previous) => {
+      if (previous.includes(style.id)) {
+        // Keep one selected option so the generate action is always useful.
+        return previous.length === 1
+          ? previous
+          : previous.filter((id) => id !== style.id);
+      }
+
+      return [...previous, style.id];
+    });
 
     setGeneratedImages(
       []
@@ -1849,13 +1863,16 @@ function Photoshoot({
       setProgressMessage(ui.creatingAllFormats);
       setProgressPercent(12);
       // All four routes run on this computer's Python/OpenCV pipeline; no Replicate request or credits.
-      const stylesToCreate = ["studio", "lifestyle", "model", "closeup"];
+      const stylesToCreate = selectedStyles;
+      if (!stylesToCreate.length) throw new Error("Select at least one photo style.");
       const images = [];
       for (let index = 0; index < stylesToCreate.length; index += 1) {
         const style = stylesToCreate[index];
         const styleLabel = ui.styles[style]?.title || style;
-        setProgressMessage(ui.creatingStyleImage(styleLabel, index + 1));
-        setProgressPercent(12 + index * 18);
+        setProgressMessage(
+          `Creating ${styleLabel} image (${index + 1} of ${stylesToCreate.length})…`
+        );
+        setProgressPercent(12 + Math.round((index / stylesToCreate.length) * 72));
         const formData = new FormData();
         formData.append("image", selectedImage, selectedImage.name || "product.jpg");
         formData.append("category", selectedCategory || "generic");
@@ -1884,7 +1901,11 @@ function Photoshoot({
       }
       setGeneratedImages(images); setProgressPercent(100);
       localStorage.setItem("karigarconnect-photoshoot-draft", JSON.stringify(images.map(({ style, imageUrl }) => ({ style, imageUrl }))));
-      setProgressMessage(ui.allPhotosReadyCelebration);
+      setProgressMessage(
+        stylesToCreate.length === 4
+          ? ui.allPhotosReadyCelebration
+          : `${stylesToCreate.length} professional product photo${stylesToCreate.length === 1 ? " is" : "s are"} ready!`
+      );
     } catch (error) {
       console.error("All-photo generation error:", error);
       setErrorMessage(error.message || ui.genericGenerateError);
@@ -2973,9 +2994,7 @@ function Photoshoot({
 
             {localizedStyles.map(
               (item) => {
-                const isSelected =
-                  selectedStyle ===
-                  item.id;
+                const isSelected = selectedStyles.includes(item.id);
 
                 return (
                   <button
@@ -2997,6 +3016,7 @@ function Photoshoot({
                         item
                       )
                     }
+                    aria-pressed={isSelected}
                     disabled={
                       loading ||
                       !item.available
@@ -3019,6 +3039,8 @@ function Photoshoot({
                       }
                     </small>
 
+                    {isSelected && <em className="style-selected">✓ Selected</em>}
+
                     {!item.available && (
                       <em>
                         {ui.comingSoon}
@@ -3034,8 +3056,7 @@ function Photoshoot({
 
           {/* ================= MANUAL CATEGORY ================= */}
 
-          {selectedStyle ===
-            "closeup" &&
+          {selectedStyles.includes("closeup") &&
             !selectedProduct && (
               <div className="category-field">
 
@@ -3100,8 +3121,7 @@ function Photoshoot({
 
           {/* ================= AUTOMATIC CATEGORY ================= */}
 
-          {selectedStyle ===
-            "closeup" &&
+          {selectedStyles.includes("closeup") &&
             selectedProduct && (
               <div className="category-auto">
 
@@ -3165,7 +3185,7 @@ function Photoshoot({
           >
             {loading
               ? ui.generateButtonBusy
-              : ui.generateButton}
+              : `✨ Create ${selectedStyles.length} product photo${selectedStyles.length === 1 ? "" : "s"}`}
           </button>
 
           <p className="privacy-note">

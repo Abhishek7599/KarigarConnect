@@ -16,7 +16,8 @@ const processAiScenePhoto = ({
     );
 
     const pythonCommand =
-      process.env.PYTHON_BIN || "python";
+      process.env.PYTHON_BIN ||
+      (process.platform === "win32" ? "python" : "python3");
 
     const python = spawn(
       pythonCommand,

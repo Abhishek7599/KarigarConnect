@@ -10,6 +10,12 @@ const {
   processAiScenePhoto,
 } = require("../services/aiScene.service");
 
+// Render's Python executable is normally python3; Windows installations
+// commonly expose python.  An explicit PYTHON_BIN still overrides both.
+const pythonCommand =
+  process.env.PYTHON_BIN ||
+  (process.platform === "win32" ? "python" : "python3");
+
 const processProductPhoto = async (req, res) => {
   let inputPath = null;
   let outputPath = null;
@@ -206,7 +212,7 @@ const processCloseupPhoto = async (req, res) => {
     await new Promise(
       (resolve, reject) => {
         const python = spawn(
-          "python",
+          pythonCommand,
           [
             pythonScript,
             inputPath,
