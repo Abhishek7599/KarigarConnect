@@ -1862,7 +1862,9 @@ function Photoshoot({
       updateProgressStep("background", "generating", ui.stepEnhancingUploaded);
       setProgressMessage(ui.creatingAllFormats);
       setProgressPercent(12);
-      // All four routes run on this computer's Python/OpenCV pipeline; no Replicate request or credits.
+      // Gemini receives the source photo plus product metadata, which keeps the
+      // product recognisable while generating a true studio, lifestyle, model,
+      // or close-up photograph. Render only runs this lightweight HTTP route.
       const stylesToCreate = selectedStyles;
       if (!stylesToCreate.length) throw new Error("Select at least one photo style.");
       const images = [];
@@ -1875,8 +1877,12 @@ function Photoshoot({
         setProgressPercent(12 + Math.round((index / stylesToCreate.length) * 72));
         const formData = new FormData();
         formData.append("image", selectedImage, selectedImage.name || "product.jpg");
-        formData.append("category", selectedCategory || "generic");
-        const response = await fetch(`${BACKEND_URL}/api/photos/${style}`, { method: "POST", body: formData });
+        formData.append("style", style);
+        formData.append("product", JSON.stringify({
+          ...(selectedProduct || {}),
+          category: selectedCategory || selectedProduct?.category || "generic",
+        }));
+        const response = await fetch(`${BACKEND_URL}/api/ai-photos/generate`, { method: "POST", body: formData });
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || `Unable to create the ${style} photo.`);
         if (!data.imageUrl) throw new Error(`The ${style} processor did not return an image.`);

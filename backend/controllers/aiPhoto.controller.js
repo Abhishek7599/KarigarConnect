@@ -76,8 +76,9 @@ const generateAIProductPhoto = async (req, res) => {
       recursive: true,
     });
 
+    const extension = result.mimeType === "image/png" ? "png" : "jpg";
     const fileName =
-      `ai-${style}-${Date.now()}.png`;
+      `ai-${style}-${Date.now()}.${extension}`;
 
     const outputPath = path.join(
       processedDir,

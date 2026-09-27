@@ -35,17 +35,17 @@ Craft type: ${craftType || ""}
 Craft technique: ${craftTechnique || ""}
 Region: ${region || ""}
 
-CRITICAL PRODUCT RULES:
-- Preserve the actual uploaded product.
-- Do not redesign the product.
-- Do not change its shape.
-- Do not change its colors.
-- Do not change its patterns.
-- Do not remove authentic handmade details.
+NON-NEGOTIABLE REFERENCE-FIDELITY RULES:
+- The uploaded photograph is the sole source of truth for the product.
+- Preserve its exact silhouette, construction, color, material, pattern,
+  hardware, proportions and handmade details.
+- Do not replace, redraw, merge, duplicate, crop away or invent any part of
+  the product.
 - Do not add logos.
 - Do not add text.
 - Do not duplicate the product.
-- Create a realistic commercial photograph.
+- Output one photorealistic commercial e-commerce photograph, never an
+  illustration, CGI render, collage, cutout, or painted scene.
 `;
 
   const stylePrompts = {
@@ -57,12 +57,11 @@ Create a clean professional studio environment suitable
 for this specific product.
 
 Use:
-- appropriate neutral or softly colored background
-- professional softbox-style lighting
-- realistic grounding shadow
-- clean composition
-- premium e-commerce photography
-- enough negative space around the product
+- a seamless warm-neutral studio backdrop
+- large softbox key light, subtle fill light and controlled rim light
+- realistic contact shadow directly beneath the product
+- a sharp product, clean highlight control and natural material texture
+- an editorial, premium e-commerce composition with generous negative space
 `,
 
     lifestyle: `
@@ -88,7 +87,8 @@ Use realistic depth, shadows and lighting.
 PHOTO STYLE:
 Professional product display/model photograph.
 
-Choose the most appropriate presentation for the product.
+Choose the most appropriate presentation for the product. Only show an adult
+model when the product is wearable or intended to be carried/used by a person.
 
 For wearable products such as sarees, shawls, scarves,
 bags or jewellery, create a realistic fashion/display
@@ -98,7 +98,9 @@ For non-wearable products, create an appropriate human-free
 display arrangement instead of forcing a person into the scene.
 
 Keep the actual product faithful to the uploaded reference.
-Use professional commercial lighting.
+Use a relatable adult Indian model, natural hands and anatomy, a natural pose,
+and professional commercial lighting. The product must remain fully visible
+and be the visual focus; never obscure, alter or duplicate it.
 `,
 
     closeup: `
@@ -155,42 +157,40 @@ const generateStyledProductImage = async ({
     style,
   });
 
-  const interaction = await ai.interactions.create({
+  const response = await ai.models.generateContent({
     model: "gemini-3.1-flash-image",
-
-    input: [
-      {
-        type: "image",
-        mime_type: mimeType,
-        data: imageBase64,
+    contents: [{
+      role: "user",
+      parts: [
+        { inlineData: { mimeType, data: imageBase64 } },
+        { text: prompt },
+      ],
+    }],
+    config: {
+      responseModalities: ["IMAGE"],
+      responseFormat: {
+        image: {
+          aspectRatio: "1:1",
+          imageSize: "2K",
+        },
       },
-      {
-        type: "text",
-        text: prompt,
-      },
-    ],
-
-    response_format: {
-      type: "image",
-      mime_type: "image/jpeg",
-      aspect_ratio: "1:1",
-      image_size: "1K",
     },
   });
 
-  if (!interaction.output_image) {
+  const parts = response?.candidates?.flatMap(
+    (candidate) => candidate?.content?.parts || []
+  ) || [];
+  const imagePart = parts.find((part) => part?.inlineData?.data);
+
+  if (!imagePart) {
     throw new Error(
-      "AI did not return an image."
+      "The AI service did not return an image. Please try again with a clear, well-lit product photo."
     );
   }
 
   return {
-    imageBase64:
-      interaction.output_image.data,
-
-    mimeType:
-      interaction.output_image.mime_type ||
-      "image/png",
+    imageBase64: imagePart.inlineData.data,
+    mimeType: imagePart.inlineData.mimeType || "image/jpeg",
 
     style,
   };
