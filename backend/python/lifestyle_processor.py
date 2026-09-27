@@ -1,10 +1,11 @@
+
 import os
 import sys
 import subprocess
+import platform
 
 import cv2
 import numpy as np
-from rembg import remove, new_session
 
 
 # ============================================================
@@ -19,7 +20,10 @@ BASE_DIR = os.path.dirname(
 )
 
 BACKEND_DIR = os.path.abspath(
-    os.path.join(BASE_DIR, "..")
+    os.path.join(
+        BASE_DIR,
+        ".."
+    )
 )
 
 LIFESTYLE_DIR = os.path.join(
@@ -35,13 +39,560 @@ UPSCALE_EXE = os.path.join(
     "realesrgan-ncnn-vulkan.exe"
 )
 
+IS_WINDOWS = (
+    platform.system().lower()
+    == "windows"
+)
+
+IS_LINUX = (
+    platform.system().lower()
+    == "linux"
+)
+
+
+# ============================================================
+# STARTUP
+# ============================================================
+
+print(
+    "=============================================="
+)
+
+print(
+    "LIFESTYLE PHOTO PROCESSOR STARTING"
+)
+
+print(
+    "=============================================="
+)
+
+print(
+    "Platform:",
+    platform.system()
+)
+
+print(
+    "Python:",
+    sys.version.split()[0]
+)
+
+if IS_LINUX:
+    print(
+        "Linux/Render detected."
+    )
+
+    print(
+        "Skipping rembg."
+    )
+
+    print(
+        "Skipping Windows Real-ESRGAN."
+    )
+
+    print(
+        "Using Render-safe OpenCV pipeline."
+    )
+
+else:
+    print(
+        "Windows detected."
+    )
+
+    print(
+        "Windows AI processing enabled."
+    )
+
+
+# ============================================================
+# REMBG - WINDOWS ONLY
+# ============================================================
+
+rembg_session = None
+
+
+def load_rembg():
+
+    global rembg_session
+
+    if not IS_WINDOWS:
+        return None
+
+    if rembg_session is not None:
+        return rembg_session
+
+    try:
+
+        print(
+            "Loading rembg..."
+        )
+
+        from rembg import new_session
+
+        rembg_session = new_session(
+            MODEL_NAME
+        )
+
+        print(
+            "rembg loaded successfully."
+        )
+
+        return rembg_session
+
+    except Exception as error:
+
+        print(
+            "rembg could not be loaded."
+        )
+
+        print(
+            "Falling back to OpenCV."
+        )
+
+        print(
+            "Reason:",
+            repr(error)
+        )
+
+        rembg_session = None
+
+        return None
+
+
+# ============================================================
+# FAST RENDER BACKGROUND REMOVAL
+# ============================================================
+
+def remove_background_opencv(
+    image
+):
+
+    print(
+        "Using FAST Render foreground extraction..."
+    )
+
+    if image is None:
+        raise RuntimeError(
+            "Input image could not be decoded."
+        )
+
+    original_height, original_width = (
+        image.shape[:2]
+    )
+
+    print(
+        f"Foreground input size: "
+        f"{original_width}x{original_height}"
+    )
+
+    # --------------------------------------------------------
+    # Work at a smaller resolution.
+    # --------------------------------------------------------
+
+    max_dimension = 600
+
+    scale = min(
+        1.0,
+        max_dimension
+        / max(
+            original_width,
+            original_height
+        )
+    )
+
+    work_width = max(
+        1,
+        int(
+            original_width
+            * scale
+        )
+    )
+
+    work_height = max(
+        1,
+        int(
+            original_height
+            * scale
+        )
+    )
+
+    working = cv2.resize(
+        image,
+        (
+            work_width,
+            work_height
+        ),
+        interpolation=cv2.INTER_AREA
+    )
+
+    print(
+        f"Working resolution: "
+        f"{work_width}x{work_height}"
+    )
+
+    # --------------------------------------------------------
+    # Estimate border background color.
+    # --------------------------------------------------------
+
+    border = max(
+        3,
+        int(
+            min(
+                work_width,
+                work_height
+            )
+            * 0.04
+        )
+    )
+
+    top = working[
+        :border,
+        :,
+        :3
+    ]
+
+    bottom = working[
+        -border:,
+        :,
+        :3
+    ]
+
+    left = working[
+        :,
+        :border,
+        :3
+    ]
+
+    right = working[
+        :,
+        -border:,
+        :3
+    ]
+
+    samples = np.concatenate(
+        [
+            top.reshape(-1, 3),
+            bottom.reshape(-1, 3),
+            left.reshape(-1, 3),
+            right.reshape(-1, 3)
+        ],
+        axis=0
+    )
+
+    background_color = (
+        np.median(
+            samples,
+            axis=0
+        )
+        .astype(np.float32)
+    )
+
+    print(
+        "Estimated background color:",
+        background_color.astype(int).tolist()
+    )
+
+    # --------------------------------------------------------
+    # Color distance.
+    # --------------------------------------------------------
+
+    difference = (
+        working.astype(np.float32)
+        - background_color.reshape(
+            1,
+            1,
+            3
+        )
+    )
+
+    distance = np.sqrt(
+        np.sum(
+            difference
+            * difference,
+            axis=2
+        )
+    )
+
+    threshold = 55.0
+
+    foreground = np.where(
+        distance > threshold,
+        255,
+        0
+    ).astype(np.uint8)
+
+    print(
+        f"Foreground threshold: "
+        f"{threshold:.2f}"
+    )
+
+    # --------------------------------------------------------
+    # Remove border-connected background.
+    # --------------------------------------------------------
+
+    flood_mask = np.zeros(
+        (
+            work_height + 2,
+            work_width + 2
+        ),
+        dtype=np.uint8
+    )
+
+    background_binary = np.where(
+        foreground == 0,
+        255,
+        0
+    ).astype(np.uint8)
+
+    flood_filled = (
+        background_binary.copy()
+    )
+
+    seeds = [
+        (0, 0),
+        (
+            work_width - 1,
+            0
+        ),
+        (
+            0,
+            work_height - 1
+        ),
+        (
+            work_width - 1,
+            work_height - 1
+        )
+    ]
+
+    for seed_x, seed_y in seeds:
+
+        if (
+            flood_filled[
+                seed_y,
+                seed_x
+            ]
+            == 255
+        ):
+
+            cv2.floodFill(
+                flood_filled,
+                flood_mask,
+                (
+                    seed_x,
+                    seed_y
+                ),
+                128
+            )
+
+    border_background = np.where(
+        flood_filled == 128,
+        0,
+        255
+    ).astype(np.uint8)
+
+    foreground = cv2.bitwise_and(
+        foreground,
+        border_background
+    )
+
+    # --------------------------------------------------------
+    # Clean mask.
+    # --------------------------------------------------------
+
+    kernel = np.ones(
+        (3, 3),
+        np.uint8
+    )
+
+    foreground = cv2.morphologyEx(
+        foreground,
+        cv2.MORPH_OPEN,
+        kernel
+    )
+
+    foreground = cv2.morphologyEx(
+        foreground,
+        cv2.MORPH_CLOSE,
+        kernel
+    )
+
+    foreground = cv2.GaussianBlur(
+        foreground,
+        (0, 0),
+        1.2
+    )
+
+    foreground = np.where(
+        foreground > 80,
+        255,
+        0
+    ).astype(np.uint8)
+
+    # --------------------------------------------------------
+    # Restore original resolution.
+    # --------------------------------------------------------
+
+    alpha = cv2.resize(
+        foreground,
+        (
+            original_width,
+            original_height
+        ),
+        interpolation=cv2.INTER_LINEAR
+    )
+
+    alpha = cv2.GaussianBlur(
+        alpha,
+        (0, 0),
+        1.0
+    )
+
+    # --------------------------------------------------------
+    # Create RGBA.
+    # --------------------------------------------------------
+
+    bgra = cv2.cvtColor(
+        image[:, :, :3],
+        cv2.COLOR_BGR2BGRA
+    )
+
+    bgra[
+        :, :, 3
+    ] = alpha
+
+    print(
+        "FAST Render foreground extraction complete."
+    )
+
+    return bgra
+
+
+# ============================================================
+# BACKGROUND REMOVAL
+# ============================================================
+
+def remove_background(
+    input_path
+):
+
+    print(
+        "Removing product background..."
+    )
+
+    # --------------------------------------------------------
+    # Render / Linux
+    # --------------------------------------------------------
+
+    if IS_LINUX:
+
+        image = cv2.imread(
+            input_path,
+            cv2.IMREAD_COLOR
+        )
+
+        if image is None:
+            raise RuntimeError(
+                "Could not read input image."
+            )
+
+        return remove_background_opencv(
+            image
+        )
+
+    # --------------------------------------------------------
+    # Windows rembg
+    # --------------------------------------------------------
+
+    session = load_rembg()
+
+    if session is not None:
+
+        print(
+            "Using rembg..."
+        )
+
+        try:
+
+            from rembg import remove
+
+            with open(
+                input_path,
+                "rb"
+            ) as file:
+
+                source = file.read()
+
+            removed = remove(
+                source,
+                session=session
+            )
+
+            encoded = np.frombuffer(
+                removed,
+                np.uint8
+            )
+
+            rgba = cv2.imdecode(
+                encoded,
+                cv2.IMREAD_UNCHANGED
+            )
+
+            if (
+                rgba is not None
+                and len(rgba.shape) == 3
+                and rgba.shape[2] == 4
+            ):
+
+                print(
+                    "rembg background removal complete."
+                )
+
+                return rgba
+
+        except Exception as error:
+
+            print(
+                "rembg processing failed."
+            )
+
+            print(
+                "Falling back to OpenCV."
+            )
+
+            print(
+                "Reason:",
+                repr(error)
+            )
+
+    # --------------------------------------------------------
+    # OpenCV fallback
+    # --------------------------------------------------------
+
+    image = cv2.imread(
+        input_path,
+        cv2.IMREAD_COLOR
+    )
+
+    if image is None:
+        raise RuntimeError(
+            "Could not read input image."
+        )
+
+    return remove_background_opencv(
+        image
+    )
+
 
 # ============================================================
 # CATEGORY
 # ============================================================
 
-def normalize_category(category):
-    value = (category or "generic").lower().strip()
+def normalize_category(
+    category
+):
+
+    value = (
+        category or "generic"
+    ).lower().strip()
 
     if any(
         word in value
@@ -53,7 +604,7 @@ def normalize_category(category):
             "textile",
             "handloom",
             "fabric",
-            "dupatta",
+            "dupatta"
         ]
     ):
         return "handloom"
@@ -66,7 +617,7 @@ def normalize_category(category):
             "vase",
             "ceramic",
             "clay",
-            "terracotta",
+            "terracotta"
         ]
     ):
         return "pottery"
@@ -79,7 +630,7 @@ def normalize_category(category):
             "necklace",
             "earring",
             "bracelet",
-            "ring",
+            "ring"
         ]
     ):
         return "jewellery"
@@ -91,7 +642,7 @@ def normalize_category(category):
             "purse",
             "handbag",
             "clutch",
-            "fashion",
+            "fashion"
         ]
     ):
         return "fashion"
@@ -102,7 +653,7 @@ def normalize_category(category):
             "wood",
             "wooden",
             "carving",
-            "woodcraft",
+            "woodcraft"
         ]
     ):
         return "woodcraft"
@@ -116,7 +667,7 @@ def normalize_category(category):
             "cushion",
             "basket",
             "rug",
-            "furniture",
+            "furniture"
         ]
     ):
         return "home"
@@ -128,41 +679,59 @@ def normalize_category(category):
 # SCENE SELECTION
 # ============================================================
 
-def get_scene_path(category):
-    normalized = normalize_category(category)
+def get_scene_path(
+    category
+):
+
+    normalized = normalize_category(
+        category
+    )
 
     category_dir = os.path.join(
         LIFESTYLE_DIR,
         normalized
     )
 
-    if not os.path.isdir(category_dir):
+    if not os.path.isdir(
+        category_dir
+    ):
+
         category_dir = os.path.join(
             LIFESTYLE_DIR,
             "generic"
         )
 
-    if not os.path.isdir(category_dir):
+    if not os.path.isdir(
+        category_dir
+    ):
+
         raise RuntimeError(
-            f"Lifestyle folder not found: {category_dir}"
+            f"Lifestyle folder not found: "
+            f"{category_dir}"
         )
 
     valid_extensions = (
         ".jpg",
         ".jpeg",
         ".png",
-        ".webp",
+        ".webp"
     )
 
     files = sorted(
         file
-        for file in os.listdir(category_dir)
-        if file.lower().endswith(valid_extensions)
+        for file in os.listdir(
+            category_dir
+        )
+        if file.lower().endswith(
+            valid_extensions
+        )
     )
 
     if not files:
+
         raise RuntimeError(
-            f"No lifestyle scene found in: {category_dir}"
+            f"No lifestyle scene found in: "
+            f"{category_dir}"
         )
 
     return os.path.join(
@@ -175,7 +744,12 @@ def get_scene_path(category):
 # SCENE FIT
 # ============================================================
 
-def resize_cover(image, width, height):
+def resize_cover(
+    image,
+    width,
+    height
+):
+
     h, w = image.shape[:2]
 
     scale = max(
@@ -195,7 +769,10 @@ def resize_cover(image, width, height):
 
     resized = cv2.resize(
         image,
-        (new_w, new_h),
+        (
+            new_w,
+            new_h
+        ),
         interpolation=cv2.INTER_LANCZOS4
     )
 
@@ -219,8 +796,15 @@ def resize_cover(image, width, height):
 # PRODUCT DETECTION
 # ============================================================
 
-def find_bbox(alpha):
-    mask = (alpha > 15).astype(np.uint8) * 255
+def find_bbox(
+    alpha
+):
+
+    mask = (
+        alpha > 15
+    ).astype(
+        np.uint8
+    ) * 255
 
     contours, _ = cv2.findContours(
         mask,
@@ -236,21 +820,35 @@ def find_bbox(alpha):
         key=cv2.contourArea
     )
 
-    if cv2.contourArea(largest) < 50:
+    if cv2.contourArea(
+        largest
+    ) < 50:
+
         return None
 
-    x, y, w, h = cv2.boundingRect(
-        largest
+    x, y, w, h = (
+        cv2.boundingRect(
+            largest
+        )
     )
 
-    return x, y, x + w, y + h
+    return (
+        x,
+        y,
+        x + w,
+        y + h
+    )
 
 
 # ============================================================
 # PRODUCT ROTATION
 # ============================================================
 
-def rotate_rgba(image, angle):
+def rotate_rgba(
+    image,
+    angle
+):
+
     h, w = image.shape[:2]
 
     center = (
@@ -264,15 +862,22 @@ def rotate_rgba(image, angle):
         1.0
     )
 
-    cos = abs(matrix[0, 0])
-    sin = abs(matrix[0, 1])
+    cos = abs(
+        matrix[0, 0]
+    )
+
+    sin = abs(
+        matrix[0, 1]
+    )
 
     new_w = int(
-        h * sin + w * cos
+        h * sin
+        + w * cos
     )
 
     new_h = int(
-        h * cos + w * sin
+        h * cos
+        + w * sin
     )
 
     matrix[0, 2] += (
@@ -285,64 +890,22 @@ def rotate_rgba(image, angle):
         - center[1]
     )
 
-    rotated = cv2.warpAffine(
+    return cv2.warpAffine(
         image,
         matrix,
-        (new_w, new_h),
+        (
+            new_w,
+            new_h
+        ),
         flags=cv2.INTER_CUBIC,
         borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(0, 0, 0, 0),
+        borderValue=(
+            0,
+            0,
+            0,
+            0
+        )
     )
-
-    return rotated
-
-
-# ============================================================
-# PERSPECTIVE
-# ============================================================
-
-def apply_perspective(
-    image,
-    top_left,
-    top_right,
-    bottom_right,
-    bottom_left,
-):
-    h, w = image.shape[:2]
-
-    source = np.float32(
-        [
-            [0, 0],
-            [w - 1, 0],
-            [w - 1, h - 1],
-            [0, h - 1],
-        ]
-    )
-
-    destination = np.float32(
-        [
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        ]
-    )
-
-    matrix = cv2.getPerspectiveTransform(
-        source,
-        destination
-    )
-
-    result = cv2.warpPerspective(
-        image,
-        matrix,
-        (OUTPUT_SIZE, OUTPUT_SIZE),
-        flags=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(0, 0, 0, 0),
-    )
-
-    return result
 
 
 # ============================================================
@@ -353,26 +916,42 @@ def match_color(
     product,
     scene_region
 ):
-    product_bgr = product.astype(
-        np.float32
+
+    product_bgr = (
+        product.astype(
+            np.float32
+        )
     )
 
-    scene_bgr = scene_region.astype(
-        np.float32
+    scene_bgr = (
+        scene_region.astype(
+            np.float32
+        )
     )
 
     product_mean = (
-        product_bgr.reshape(-1, 3).mean(axis=0)
+        product_bgr.reshape(
+            -1,
+            3
+        ).mean(
+            axis=0
+        )
         + 1.0
     )
 
     scene_mean = (
-        scene_bgr.reshape(-1, 3).mean(axis=0)
+        scene_bgr.reshape(
+            -1,
+            3
+        ).mean(
+            axis=0
+        )
         + 1.0
     )
 
     factor = (
-        scene_mean / product_mean
+        scene_mean
+        / product_mean
     )
 
     factor = np.clip(
@@ -382,14 +961,17 @@ def match_color(
     )
 
     result = (
-        product_bgr * factor
+        product_bgr
+        * factor
     )
 
     return np.clip(
         result,
         0,
         255
-    ).astype(np.uint8)
+    ).astype(
+        np.uint8
+    )
 
 
 # ============================================================
@@ -400,6 +982,7 @@ def match_brightness(
     product,
     scene_region
 ):
+
     product_gray = cv2.cvtColor(
         product,
         cv2.COLOR_BGR2GRAY
@@ -410,16 +993,24 @@ def match_brightness(
         cv2.COLOR_BGR2GRAY
     )
 
-    p_mean = float(
-        np.mean(product_gray)
+    product_mean = float(
+        np.mean(
+            product_gray
+        )
     )
 
-    s_mean = float(
-        np.mean(scene_gray)
+    scene_mean = float(
+        np.mean(
+            scene_gray
+        )
     )
 
     correction = (
-        s_mean / max(p_mean, 1.0)
+        scene_mean
+        / max(
+            product_mean,
+            1.0
+        )
     )
 
     correction = np.clip(
@@ -439,7 +1030,10 @@ def match_brightness(
 # PRODUCT ENHANCEMENT
 # ============================================================
 
-def enhance_product(image):
+def enhance_product(
+    image
+):
+
     enhanced = cv2.detailEnhance(
         image,
         sigma_s=8,
@@ -450,7 +1044,7 @@ def enhance_product(image):
         [
             [0, -1, 0],
             [-1, 5, -1],
-            [0, -1, 0],
+            [0, -1, 0]
         ],
         dtype=np.float32
     )
@@ -473,16 +1067,14 @@ def make_shadow(
     offset_x=12,
     offset_y=16,
     blur=14,
-    strength=105,
+    strength=105
 ):
+
     h, w = alpha.shape
 
-    shadow = np.zeros(
-        (h, w),
-        dtype=np.uint8
+    shifted = np.zeros_like(
+        alpha
     )
-
-    shifted = np.zeros_like(alpha)
 
     src_x1 = max(
         0,
@@ -530,6 +1122,7 @@ def make_shadow(
         and dst_x2 > dst_x1
         and dst_y2 > dst_y1
     ):
+
         shifted[
             dst_y1:dst_y2,
             dst_x1:dst_x2
@@ -542,16 +1135,19 @@ def make_shadow(
         shifted.astype(
             np.float32
         )
-        * (strength / 255.0)
-    ).astype(np.uint8)
+        * (
+            strength
+            / 255.0
+        )
+    ).astype(
+        np.uint8
+    )
 
-    shadow = cv2.GaussianBlur(
+    return cv2.GaussianBlur(
         shadow,
         (0, 0),
         blur
     )
-
-    return shadow
 
 
 # ============================================================
@@ -562,10 +1158,16 @@ def alpha_composite(
     background,
     foreground,
     x,
-    y,
+    y
 ):
-    bg_h, bg_w = background.shape[:2]
-    fg_h, fg_w = foreground.shape[:2]
+
+    bg_h, bg_w = (
+        background.shape[:2]
+    )
+
+    fg_h, fg_w = (
+        foreground.shape[:2]
+    )
 
     x1 = max(
         0,
@@ -587,16 +1189,33 @@ def alpha_composite(
         y + fg_h
     )
 
-    if x1 >= x2 or y1 >= y2:
+    if (
+        x1 >= x2
+        or y1 >= y2
+    ):
+
         return background
 
-    fg_x1 = x1 - x
-    fg_y1 = y1 - y
-    fg_x2 = fg_x1 + (
-        x2 - x1
+    fg_x1 = (
+        x1 - x
     )
-    fg_y2 = fg_y1 + (
-        y2 - y1
+
+    fg_y1 = (
+        y1 - y
+    )
+
+    fg_x2 = (
+        fg_x1
+        + (
+            x2 - x1
+        )
+    )
+
+    fg_y2 = (
+        fg_y1
+        + (
+            y2 - y1
+        )
     )
 
     fg = foreground[
@@ -617,20 +1236,30 @@ def alpha_composite(
         / 255.0
     )
 
-    alpha = alpha[:, :, None]
+    alpha = alpha[
+        :, :, None
+    ]
 
-    fg_bgr = fg[:, :, :3].astype(
-        np.float32
+    fg_bgr = (
+        fg[:, :, :3]
+        .astype(
+            np.float32
+        )
     )
 
-    bg_float = bg.astype(
-        np.float32
+    bg_float = (
+        bg.astype(
+            np.float32
+        )
     )
 
     result = (
         fg_bgr * alpha
         +
-        bg_float * (1 - alpha)
+        bg_float
+        * (
+            1 - alpha
+        )
     )
 
     background[
@@ -640,30 +1269,33 @@ def alpha_composite(
         result,
         0,
         255
-    ).astype(np.uint8)
+    ).astype(
+        np.uint8
+    )
 
     return background
 
 
 # ============================================================
-# SCENE-SPECIFIC PLACEMENT
+# SCENE CONFIG
 # ============================================================
 
 def get_scene_config(
     category
 ):
+
     category = normalize_category(
         category
     )
 
     configs = {
+
         "handloom": {
             "max_width": 0.62,
             "max_height": 0.55,
             "center_x": 0.50,
             "center_y": 0.67,
-            "rotation": -1.2,
-            "perspective": True,
+            "rotation": -1.2
         },
 
         "pottery": {
@@ -671,8 +1303,7 @@ def get_scene_config(
             "max_height": 0.45,
             "center_x": 0.50,
             "center_y": 0.72,
-            "rotation": 0,
-            "perspective": True,
+            "rotation": 0
         },
 
         "jewellery": {
@@ -680,8 +1311,7 @@ def get_scene_config(
             "max_height": 0.30,
             "center_x": 0.50,
             "center_y": 0.73,
-            "rotation": 0,
-            "perspective": True,
+            "rotation": 0
         },
 
         "fashion": {
@@ -689,8 +1319,7 @@ def get_scene_config(
             "max_height": 0.52,
             "center_x": 0.50,
             "center_y": 0.68,
-            "rotation": -1.0,
-            "perspective": True,
+            "rotation": -1.0
         },
 
         "woodcraft": {
@@ -698,8 +1327,7 @@ def get_scene_config(
             "max_height": 0.50,
             "center_x": 0.50,
             "center_y": 0.70,
-            "rotation": 0.8,
-            "perspective": True,
+            "rotation": 0.8
         },
 
         "home": {
@@ -707,8 +1335,7 @@ def get_scene_config(
             "max_height": 0.48,
             "center_x": 0.50,
             "center_y": 0.70,
-            "rotation": 0,
-            "perspective": True,
+            "rotation": 0
         },
 
         "generic": {
@@ -716,9 +1343,8 @@ def get_scene_config(
             "max_height": 0.48,
             "center_x": 0.50,
             "center_y": 0.70,
-            "rotation": 0,
-            "perspective": True,
-        },
+            "rotation": 0
+        }
     }
 
     return configs.get(
@@ -728,55 +1354,268 @@ def get_scene_config(
 
 
 # ============================================================
+# UPSCALING
+# ============================================================
+
+def upscale_with_realesrgan(
+    input_path,
+    output_path
+):
+
+    # --------------------------------------------------------
+    # Render / Linux
+    # --------------------------------------------------------
+
+    if IS_LINUX:
+
+        print(
+            "Render/Linux detected."
+        )
+
+        print(
+            "Skipping Windows Real-ESRGAN."
+        )
+
+        print(
+            "Using OpenCV 2x Lanczos upscaling..."
+        )
+
+        image = cv2.imread(
+            input_path,
+            cv2.IMREAD_COLOR
+        )
+
+        if image is None:
+            raise RuntimeError(
+                "Could not read image for upscaling."
+            )
+
+        height, width = (
+            image.shape[:2]
+        )
+
+        target_width = width * 2
+        target_height = height * 2
+
+        upscaled = cv2.resize(
+            image,
+            (
+                target_width,
+                target_height
+            ),
+            interpolation=cv2.INTER_LANCZOS4
+        )
+
+        success = cv2.imwrite(
+            output_path,
+            upscaled,
+            [
+                cv2.IMWRITE_JPEG_QUALITY,
+                96
+            ]
+        )
+
+        if not success:
+            raise RuntimeError(
+                "OpenCV upscaling failed."
+            )
+
+        print(
+            f"Upscaled image: "
+            f"{target_width}x{target_height}"
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Windows Real-ESRGAN
+    # --------------------------------------------------------
+
+    if not os.path.exists(
+        UPSCALE_EXE
+    ):
+
+        print(
+            "Real-ESRGAN executable not found."
+        )
+
+        print(
+            "Using OpenCV 2x fallback."
+        )
+
+        image = cv2.imread(
+            input_path,
+            cv2.IMREAD_COLOR
+        )
+
+        if image is None:
+            raise RuntimeError(
+                "Could not read image for upscaling."
+            )
+
+        height, width = (
+            image.shape[:2]
+        )
+
+        upscaled = cv2.resize(
+            image,
+            (
+                width * 2,
+                height * 2
+            ),
+            interpolation=cv2.INTER_LANCZOS4
+        )
+
+        cv2.imwrite(
+            output_path,
+            upscaled,
+            [
+                cv2.IMWRITE_JPEG_QUALITY,
+                96
+            ]
+        )
+
+        return
+
+    print(
+        "Running Real-ESRGAN 4x..."
+    )
+
+    command = [
+        UPSCALE_EXE,
+        "-i",
+        input_path,
+        "-o",
+        output_path,
+        "-s",
+        "4",
+        "-n",
+        "realesrgan-x4plus"
+    ]
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True
+    )
+
+    if result.stdout:
+        print(
+            result.stdout
+        )
+
+    if result.stderr:
+        print(
+            result.stderr
+        )
+
+    if (
+        result.returncode != 0
+    ):
+
+        print(
+            "Real-ESRGAN failed."
+        )
+
+        print(
+            "Using OpenCV fallback."
+        )
+
+        image = cv2.imread(
+            input_path,
+            cv2.IMREAD_COLOR
+        )
+
+        if image is None:
+            raise RuntimeError(
+                "Could not read image for fallback."
+            )
+
+        height, width = (
+            image.shape[:2]
+        )
+
+        upscaled = cv2.resize(
+            image,
+            (
+                width * 2,
+                height * 2
+            ),
+            interpolation=cv2.INTER_LANCZOS4
+        )
+
+        cv2.imwrite(
+            output_path,
+            upscaled,
+            [
+                cv2.IMWRITE_JPEG_QUALITY,
+                96
+            ]
+        )
+
+        return
+
+    if not os.path.exists(
+        output_path
+    ):
+
+        raise RuntimeError(
+            "Real-ESRGAN output was not created."
+        )
+
+
+# ============================================================
 # MAIN PROCESS
 # ============================================================
 
 def process_lifestyle(
     input_path,
     category,
-    output_path,
+    output_path
 ):
+
+    print(
+        "=============================================="
+    )
+
+    print(
+        "LIFESTYLE PROCESSING"
+    )
+
+    print(
+        "=============================================="
+    )
+
+    print(
+        "Category:",
+        category
+    )
+
+    print(
+        "Input:",
+        input_path
+    )
+
+    print(
+        "Output:",
+        output_path
+    )
+
+    # --------------------------------------------------------
+    # 1
+    # --------------------------------------------------------
+
     print(
         "1/9 Removing product background..."
     )
 
-    session = new_session(
-        MODEL_NAME
+    rgba = remove_background(
+        input_path
     )
 
-    with open(
-        input_path,
-        "rb"
-    ) as file:
-        source = file.read()
-
-    removed = remove(
-        source,
-        session=session
-    )
-
-    encoded = np.frombuffer(
-        removed,
-        np.uint8
-    )
-
-    rgba = cv2.imdecode(
-        encoded,
-        cv2.IMREAD_UNCHANGED
-    )
-
-    if rgba is None:
-        raise RuntimeError(
-            "Could not decode product image."
-        )
-
-    if (
-        len(rgba.shape) != 3
-        or rgba.shape[2] != 4
-    ):
-        raise RuntimeError(
-            "Background removal did not return RGBA."
-        )
+    # --------------------------------------------------------
+    # 2
+    # --------------------------------------------------------
 
     print(
         "2/9 Loading lifestyle scene..."
@@ -796,6 +1635,7 @@ def process_lifestyle(
     )
 
     if scene is None:
+
         raise RuntimeError(
             "Could not load lifestyle scene."
         )
@@ -806,17 +1646,24 @@ def process_lifestyle(
         OUTPUT_SIZE
     )
 
+    # --------------------------------------------------------
+    # 3
+    # --------------------------------------------------------
+
     print(
         "3/9 Detecting product..."
     )
 
-    alpha = rgba[:, :, 3]
+    alpha = rgba[
+        :, :, 3
+    ]
 
     bbox = find_bbox(
         alpha
     )
 
     if bbox is None:
+
         raise RuntimeError(
             "Could not detect product."
         )
@@ -824,11 +1671,13 @@ def process_lifestyle(
     x1, y1, x2, y2 = bbox
 
     pad_x = int(
-        (x2 - x1) * 0.025
+        (x2 - x1)
+        * 0.025
     )
 
     pad_y = int(
-        (y2 - y1) * 0.025
+        (y2 - y1)
+        * 0.025
     )
 
     x1 = max(
@@ -855,6 +1704,10 @@ def process_lifestyle(
         y1:y2,
         x1:x2
     ].copy()
+
+    # --------------------------------------------------------
+    # 4
+    # --------------------------------------------------------
 
     config = get_scene_config(
         category
@@ -886,17 +1739,23 @@ def process_lifestyle(
         max_h / max(
             product_h,
             1
-        ),
+        )
     )
 
     new_w = max(
         1,
-        int(product_w * scale)
+        int(
+            product_w
+            * scale
+        )
     )
 
     new_h = max(
         1,
-        int(product_h * scale)
+        int(
+            product_h
+            * scale
+        )
     )
 
     product = cv2.resize(
@@ -908,8 +1767,12 @@ def process_lifestyle(
         interpolation=cv2.INTER_CUBIC
     )
 
+    # --------------------------------------------------------
+    # 5
+    # --------------------------------------------------------
+
     print(
-        "5/9 Applying perspective and rotation..."
+        "5/9 Applying rotation..."
     )
 
     product = rotate_rgba(
@@ -917,7 +1780,6 @@ def process_lifestyle(
         config["rotation"]
     )
 
-    # Recalculate dimensions after rotation.
     product_h, product_w = (
         product.shape[:2]
     )
@@ -942,15 +1804,16 @@ def process_lifestyle(
         - product_h // 2
     )
 
-    # Product should sit on the lower portion
-    # of the image instead of floating.
-    if normalize_category(category) in [
+    if normalize_category(
+        category
+    ) in [
         "handloom",
         "pottery",
         "fashion",
         "woodcraft",
-        "home",
+        "home"
     ]:
+
         pos_y = int(
             center_y
             - product_h * 0.42
@@ -960,7 +1823,8 @@ def process_lifestyle(
         0,
         min(
             pos_y,
-            OUTPUT_SIZE - product_h
+            OUTPUT_SIZE
+            - product_h
         )
     )
 
@@ -968,9 +1832,14 @@ def process_lifestyle(
         0,
         min(
             pos_x,
-            OUTPUT_SIZE - product_w
+            OUTPUT_SIZE
+            - product_w
         )
     )
+
+    # --------------------------------------------------------
+    # 6
+    # --------------------------------------------------------
 
     print(
         "6/9 Matching product lighting and color..."
@@ -994,9 +1863,12 @@ def process_lifestyle(
         scene_region.shape[1]
         == product_w
     ):
-        product_bgr = product[
-            :, :, :3
-        ]
+
+        product_bgr = (
+            product[
+                :, :, :3
+            ]
+        )
 
         matched = match_color(
             product_bgr,
@@ -1012,13 +1884,19 @@ def process_lifestyle(
             :, :, :3
         ] = matched
 
+    # --------------------------------------------------------
+    # 7
+    # --------------------------------------------------------
+
     print(
         "7/9 Creating realistic contact shadow..."
     )
 
-    product_alpha = product[
-        :, :, 3
-    ]
+    product_alpha = (
+        product[
+            :, :, 3
+        ]
+    )
 
     shadow = make_shadow(
         product_alpha,
@@ -1048,22 +1926,16 @@ def process_lifestyle(
         :, :, 2
     ] = 24
 
-    # Put a slightly flattened version under the product.
-    shadow_rgba = cv2.resize(
-        shadow_rgba,
-        (
-            product_w,
-            product_h
-        ),
-        interpolation=cv2.INTER_LINEAR
-    )
-
     scene = alpha_composite(
         scene,
         shadow_rgba,
         pos_x + 5,
         pos_y + 7
     )
+
+    # --------------------------------------------------------
+    # 8
+    # --------------------------------------------------------
 
     print(
         "8/9 Compositing and enhancing..."
@@ -1076,7 +1948,10 @@ def process_lifestyle(
         pos_y
     )
 
-    # Enhance only the final scene gently.
+    # --------------------------------------------------------
+    # Gentle final enhancement.
+    # --------------------------------------------------------
+
     lab = cv2.cvtColor(
         scene,
         cv2.COLOR_BGR2LAB
@@ -1088,13 +1963,24 @@ def process_lifestyle(
 
     clahe = cv2.createCLAHE(
         clipLimit=1.2,
-        tileGridSize=(8, 8)
+        tileGridSize=(
+            8,
+            8
+        )
     )
 
-    l = clahe.apply(l)
+    l = clahe.apply(
+        l
+    )
 
     scene = cv2.cvtColor(
-        cv2.merge((l, a, b)),
+        cv2.merge(
+            (
+                l,
+                a,
+                b
+            )
+        ),
         cv2.COLOR_LAB2BGR
     )
 
@@ -1116,7 +2002,7 @@ def process_lifestyle(
         + ".base.jpg"
     )
 
-    cv2.imwrite(
+    success = cv2.imwrite(
         base_output,
         scene,
         [
@@ -1125,46 +2011,29 @@ def process_lifestyle(
         ]
     )
 
+    if not success:
+
+        raise RuntimeError(
+            "Could not create lifestyle base image."
+        )
+
+    # --------------------------------------------------------
+    # 9
+    # --------------------------------------------------------
+
     print(
-        "9/9 Running Real-ESRGAN 4×..."
+        "9/9 Upscaling final image..."
     )
 
-    if not os.path.exists(
-        UPSCALE_EXE
-    ):
-        raise RuntimeError(
-            "Real-ESRGAN executable not found: "
-            + UPSCALE_EXE
-        )
-
-    command = [
-        UPSCALE_EXE,
-        "-i",
+    upscale_with_realesrgan(
         base_output,
-        "-o",
-        output_path,
-        "-s",
-        "4",
-        "-n",
-        "realesrgan-x4plus"
-    ]
-
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True
+        output_path
     )
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            result.stderr.strip()
-            or result.stdout.strip()
-            or "Real-ESRGAN failed."
-        )
 
     if not os.path.exists(
         output_path
     ):
+
         raise RuntimeError(
             "Lifestyle image was not created."
         )
@@ -1172,23 +2041,54 @@ def process_lifestyle(
     if os.path.exists(
         base_output
     ):
-        os.remove(
-            base_output
-        )
+
+        try:
+            os.remove(
+                base_output
+            )
+
+        except OSError:
+            pass
 
     final = cv2.imread(
-        output_path
+        output_path,
+        cv2.IMREAD_COLOR
     )
 
     if final is None:
+
         raise RuntimeError(
-            "Could not read final image."
+            "Could not read final lifestyle image."
         )
 
-    h, w = final.shape[:2]
+    height, width = (
+        final.shape[:2]
+    )
+
+    file_size = os.path.getsize(
+        output_path
+    )
 
     print(
-        f"Final resolution: {w} x {h}"
+        "=============================================="
+    )
+
+    print(
+        "LIFESTYLE PROCESSING COMPLETE"
+    )
+
+    print(
+        f"Final resolution: "
+        f"{width} x {height}"
+    )
+
+    print(
+        f"Output size: "
+        f"{file_size} bytes"
+    )
+
+    print(
+        "=============================================="
     )
 
 
@@ -1197,28 +2097,39 @@ def process_lifestyle(
 # ============================================================
 
 if __name__ == "__main__":
+
     if len(sys.argv) != 4:
+
         print(
             "Usage:"
         )
+
         print(
-            "python lifestyle_processor.py input.jpg category output.jpg"
+            "python lifestyle_processor.py "
+            "input.jpg category output.jpg"
         )
+
         sys.exit(1)
 
     input_path = sys.argv[1]
+
     category = sys.argv[2]
+
     output_path = sys.argv[3]
 
     if not os.path.exists(
         input_path
     ):
+
         print(
-            f"Input file not found: {input_path}"
+            f"Input file not found: "
+            f"{input_path}"
         )
+
         sys.exit(1)
 
     try:
+
         process_lifestyle(
             input_path,
             category,
@@ -1228,21 +2139,28 @@ if __name__ == "__main__":
         print(
             "================================="
         )
+
         print(
             "SUCCESS"
         )
+
         print(
-            f"Final image: {output_path}"
+            f"Final image: "
+            f"{output_path}"
         )
+
         print(
             "================================="
         )
 
     except Exception as error:
+
         print(
             "ERROR:"
         )
+
         print(
-            str(error)
+            repr(error)
         )
+
         sys.exit(1)
