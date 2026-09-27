@@ -23,6 +23,11 @@ const app = express();
 
 const allowedOrigins = [
   process.env.FRONTEND_ORIGIN,
+
+  // Current Vercel deployment
+  "https://karigar-connect-f304ooa5q-abhishek-kumar-s-projects2602.vercel.app",
+
+  // Previous Vercel deployment
   "https://karigar-connect-p45ulko99-abhishek-kumar-s-projects2602.vercel.app",
 ].filter(Boolean);
 
@@ -30,18 +35,48 @@ app.use(
   cors({
     origin: function (origin, callback) {
       // Allow requests without an Origin header
-      // (Postman, server-to-server requests, etc.)
+      // Postman, server-to-server requests, etc.
       if (!origin) {
         return callback(null, true);
       }
 
+      // Allow explicitly configured frontend origins
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
+      // Allow Vercel preview deployments for KarigarConnect
+      if (
+        origin.startsWith("https://karigar-connect-") &&
+        origin.endsWith(
+          "-abhishek-kumar-s-projects2602.vercel.app"
+        )
+      ) {
+        return callback(null, true);
+      }
+
+      console.log("CORS blocked origin:", origin);
+
       return callback(new Error("Not allowed by CORS"));
     },
+
     credentials: true,
+
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
+
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+    ],
+
+    optionsSuccessStatus: 204,
   })
 );
 
@@ -56,11 +91,17 @@ app.use(express.json({ limit: "10mb" }));
 // =====================================================
 
 app.use("/api/users", userRoutes);
+
 app.use("/api/products", productRoutes);
+
 app.use("/api/images", imageRoutes);
+
 app.use("/api/voice", voiceRoutes);
+
 app.use("/api/pricing", pricingRoutes);
+
 app.use("/api/photos", photoRoutes);
+
 app.use("/api/ai-photos", aiPhotoRoutes);
 
 app.use("/api/products", productTranslationRoutes);
@@ -93,11 +134,15 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
+
     database:
       mongoose.connection.readyState === 1
         ? "connected"
         : "unavailable",
-    aiConfigured: Boolean(process.env.GEMINI_API_KEY),
+
+    aiConfigured: Boolean(
+      process.env.GEMINI_API_KEY
+    ),
   });
 });
 
@@ -131,20 +176,29 @@ if (!process.env.MONGO_URI) {
   );
 
   app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(
+      `Server is running on port ${PORT}`
+    );
   });
 } else {
   mongoose
     .connect(process.env.MONGO_URI)
     .then(() => {
-      console.log("MongoDB connected successfully ✅");
+      console.log(
+        "MongoDB connected successfully ✅"
+      );
 
       app.listen(PORT, () => {
-        console.log(`Server is running on port ${PORT}`);
+        console.log(
+          `Server is running on port ${PORT}`
+        );
       });
     })
     .catch((error) => {
-      console.error("MongoDB connection failed ❌");
+      console.error(
+        "MongoDB connection failed ❌"
+      );
+
       console.error(error.message);
     });
 }
