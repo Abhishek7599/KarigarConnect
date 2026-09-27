@@ -114,10 +114,18 @@ const generateAIProductPhoto = async (req, res) => {
       error
     );
 
-    return res.status(500).json({
-      message:
-        error.message ||
-        "Failed to generate AI product photo.",
+    const isRateLimited =
+      error?.status === 429 ||
+      error?.code === 429 ||
+      /rate limit|resource exhausted|too many requests/i.test(
+        error?.message || ""
+      );
+
+    return res.status(isRateLimited ? 429 : 500).json({
+      message: isRateLimited
+        ? "The AI image service is cooling down. Retrying shortly."
+        : error.message || "Failed to generate AI product photo.",
+      retryAfterSeconds: isRateLimited ? 20 : undefined,
     });
   }
 };

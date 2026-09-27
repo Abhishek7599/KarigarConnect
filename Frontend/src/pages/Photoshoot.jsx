@@ -1868,6 +1868,39 @@ function Photoshoot({
       const stylesToCreate = selectedStyles;
       if (!stylesToCreate.length) throw new Error("Select at least one photo style.");
       const images = [];
+
+      const generateStyleWithCooldown = async (style) => {
+        const maxAttempts = 4;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          const formData = new FormData();
+          formData.append("image", selectedImage, selectedImage.name || "product.jpg");
+          formData.append("style", style);
+          formData.append("product", JSON.stringify({
+            ...(selectedProduct || {}),
+            category: selectedCategory || selectedProduct?.category || "generic",
+          }));
+
+          const response = await fetch(`${BACKEND_URL}/api/ai-photos/generate`, {
+            method: "POST",
+            body: formData,
+          });
+          const data = await response.json().catch(() => ({}));
+
+          if (response.ok) return data;
+
+          if (response.status !== 429 || attempt === maxAttempts) {
+            throw new Error(data.message || `Unable to create the ${style} photo.`);
+          }
+
+          const seconds = Number(data.retryAfterSeconds) || 20;
+          setProgressMessage(
+            `AI is cooling down. Retrying ${ui.styles[style]?.title || style} in ${seconds} seconds…`
+          );
+          await wait(seconds * 1000);
+        }
+      };
+
       for (let index = 0; index < stylesToCreate.length; index += 1) {
         const style = stylesToCreate[index];
         const styleLabel = ui.styles[style]?.title || style;
@@ -1875,16 +1908,7 @@ function Photoshoot({
           `Creating ${styleLabel} image (${index + 1} of ${stylesToCreate.length})…`
         );
         setProgressPercent(12 + Math.round((index / stylesToCreate.length) * 72));
-        const formData = new FormData();
-        formData.append("image", selectedImage, selectedImage.name || "product.jpg");
-        formData.append("style", style);
-        formData.append("product", JSON.stringify({
-          ...(selectedProduct || {}),
-          category: selectedCategory || selectedProduct?.category || "generic",
-        }));
-        const response = await fetch(`${BACKEND_URL}/api/ai-photos/generate`, { method: "POST", body: formData });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || `Unable to create the ${style} photo.`);
+        const data = await generateStyleWithCooldown(style);
         if (!data.imageUrl) throw new Error(`The ${style} processor did not return an image.`);
         images.push({
           style,
@@ -1894,6 +1918,10 @@ function Photoshoot({
           resolution: data.resolution || "High resolution",
           savedToProduct: false,
         });
+
+        // A short gap prevents a four-photo batch from immediately hitting a
+        // prototype/free-tier burst limit while still allowing unlimited runs.
+        if (index < stylesToCreate.length - 1) await wait(3000);
       }
       updateProgressStep("background", "completed", ui.sourceEnhanced);
       updateProgressStep("crop", "completed", ui.compositionsCreated);
